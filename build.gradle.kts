@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.salyvn.foliascan"
-version = "0.1.0"
+version = "0.1.1"
 
 repositories {
     mavenCentral()
@@ -40,6 +40,15 @@ tasks.test {
     testLogging {
         events("passed", "skipped", "failed")
         showStandardStreams = false
+    }
+}
+
+// Single source of truth for the version: the build writes it into a resource that the CLI
+// reads back, so the number cannot drift between build.gradle.kts and the Kotlin source.
+tasks.processResources {
+    inputs.property("version", project.version.toString())
+    filesMatching("foliascan-version.properties") {
+        expand("version" to project.version.toString())
     }
 }
 

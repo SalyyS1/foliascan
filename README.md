@@ -58,14 +58,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.1.0.jar MyPlugin.jar
+java -jar foliascan-0.1.1.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.1.0.jar MyPlugin.jar
+java -jar build/libs/foliascan-0.1.1.jar MyPlugin.jar
 ```
 
 ## Usage

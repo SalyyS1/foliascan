@@ -27,8 +27,6 @@ import kotlin.io.path.extension
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 
-private const val VERSION = "0.1.0"
-
 class FoliaScanCommand : CliktCommand(name = "foliascan") {
 
     override fun help(context: Context) =
@@ -99,7 +97,7 @@ class FoliaScanCommand : CliktCommand(name = "foliascan") {
                 disabledRules = disabled.map { it.uppercase() }.toSet(),
             ),
         )
-        val raw = ScanReport(toolVersion = VERSION, jars = jars.map { scanner.scan(it) })
+        val raw = ScanReport(toolVersion = BuildInfo.version, jars = jars.map { scanner.scan(it) })
 
         baselineOut?.let { target ->
             Baseline.write(target, raw)
@@ -139,7 +137,7 @@ class FoliaScanCommand : CliktCommand(name = "foliascan") {
     }.distinct()
 
     private fun renderRules(): String = buildString {
-        appendLine("FoliaScan $VERSION - ${RuleCatalog.all.size} rules")
+        appendLine("FoliaScan ${BuildInfo.version} - ${RuleCatalog.all.size} rules")
         RuleCatalog.all.sortedBy { it.id }.forEach { rule ->
             appendLine()
             appendLine("${rule.id}  [${rule.severity.label}]  ${rule.title}")
