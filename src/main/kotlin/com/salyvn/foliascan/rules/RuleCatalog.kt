@@ -44,6 +44,25 @@ object RuleCatalog {
         provenance = Provenance(PATCH_FLAG, "PluginDescriptionFile#isFoliaSupported"),
     )
 
+    val patchedByTool = ArtifactRule(
+        id = "FS002",
+        severity = Severity.WARNING,
+        title = "Folia support was declared by a patcher, not by the author",
+        why = "This jar carries runtime classes injected by an automated Folia patcher. Those " +
+            "tools rewrite scheduler calls and then set `folia-supported: true` in the " +
+            "descriptor whether or not the result is region-safe, so the load-time check passes " +
+            "on a claim nothing verified. A declared flag from a patched jar says only that a " +
+            "machine rewrote the bytecode.",
+        fix = "Treat the flag as unproven. Test the plugin under real load on Folia, or ask the " +
+            "author for first-party support. Patched bytecode also complicates support requests " +
+            "and future updates, since the shipped jar no longer matches the author's build.",
+        provenance = Provenance(
+            "MARVserver/pasta (FoliaPhantom), MIT",
+            "PluginPatcher#modifyPluginDescriptor writes `folia-supported: true` " +
+                "unconditionally; PluginPatcher.RUNTIME_CLASSES bundles the marker classes",
+        ),
+    )
+
     private val bukkitSchedulerGetter = CallRule(
         id = "FS010",
         severity = Severity.CRITICAL,
@@ -299,6 +318,8 @@ object RuleCatalog {
 
     val manifestRules: List<ManifestRule> = listOf(foliaSupportFlag)
 
+    val artifactRules: List<ArtifactRule> = listOf(patchedByTool)
+
     val supertypeRules: List<SupertypeRule> = listOf(bukkitRunnableSubclass)
 
     val packageRules: List<PackageRule> = listOf(serverInternals)
@@ -310,7 +331,7 @@ object RuleCatalog {
         blockStateRegionGuarded, entityFamilyRegionGuarded, primaryThreadCheck,
     )
 
-    val all: List<Rule> = manifestRules + supertypeRules + packageRules + callRules
+    val all: List<Rule> = manifestRules + artifactRules + supertypeRules + packageRules + callRules
 
     fun byId(id: String): Rule? = all.firstOrNull { it.id.equals(id, ignoreCase = true) }
 }

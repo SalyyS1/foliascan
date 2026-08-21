@@ -128,6 +128,7 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | Id | Severity | What it catches |
 |----|----------|-----------------|
 | FS001 | blocker | descriptor missing `folia-supported: true` — Folia refuses to load the plugin |
+| FS002 | warning | the `folia-supported` flag was written by a patcher, not by the author |
 | FS010 | critical | `Bukkit.getScheduler()` / `Server#getScheduler()` |
 | FS011 | critical | any call on `BukkitScheduler`, including via a stored field |
 | FS012 | critical | class extends `BukkitRunnable` |
@@ -168,6 +169,28 @@ Relocated dependency packages (`…/libs/`, `…/shaded/`, `…/vendor/`, and si
 analysed but not blamed: a compatibility shim like FoliaLib intentionally contains a legacy
 `BukkitScheduler` implementation for non-Folia servers, so reporting it is noise. They still
 count toward "Folia API usage" and still taint the plugin code they call. `--all` reports them.
+
+## Related tools
+
+FoliaScan reports; it does not modify your jar.
+
+**[FoliaPhantom / pasta](https://github.com/MARVserver/pasta)** (MIT) rewrites plugin bytecode to
+route legacy scheduler calls through its own shim. Different job, and useful if you want a server
+to boot today. Two things to know if you use it: `PluginPatcher#modifyPluginDescriptor` appends
+`folia-supported: true` unconditionally, without analysing whether the result is region-safe, and
+its own README disclaims thread-safety guarantees. So a patched jar's declared flag is a machine's
+assumption, not the author's claim — which is what rule **FS002** exists to surface. FoliaScan
+detects the runtime classes pasta bundles and says so instead of trusting the flag.
+
+**[folia-checker](https://github.com/IronDiscipline-Project/folia-checker)** (MIT) is a VS Code
+extension applying line-by-line regular expressions to `.java` sources. Source-only, Java-only,
+and regex granularity means it cannot separate `runTaskAsynchronously` from `runTask` without
+hand-tuned patterns.
+
+**[FoliaLib](https://github.com/technicallycoded/FoliaLib)** and similar are runtime helper
+libraries: they help you *write* Folia-compatible code. FoliaScan tells you whether you already
+did. They compose — a jar bundling FoliaLib scans clean, because relocated shim code is analysed
+but not blamed.
 
 ## What it does not do
 

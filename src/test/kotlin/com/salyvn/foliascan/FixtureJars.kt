@@ -37,11 +37,27 @@ object FixtureJars {
         foliaSupported = false,
     )
 
+    /**
+     * A jar that declares Folia support and carries FoliaPhantom's injected runtime class, i.e.
+     * the flag came from a patcher rather than from the author.
+     */
+    fun patchedByFoliaPhantom(): Path = build(
+        jarName = "patched-plugin",
+        packagePath = "fixtures/legacy/",
+        main = "fixtures.legacy.LegacyPlugin",
+        foliaSupported = true,
+        extraEntries = mapOf(
+            "com/patch/foliaphantom/patcher/FoliaPatcher.class" to
+                readResource("fixtures/legacy/HeartbeatTask.class"),
+        ),
+    )
+
     private fun build(
         jarName: String,
         packagePath: String,
         main: String?,
         foliaSupported: Boolean,
+        extraEntries: Map<String, ByteArray> = emptyMap(),
     ): Path {
         val target = Files.createTempFile(jarName, ".jar")
         JarOutputStream(Files.newOutputStream(target)).use { out ->
@@ -53,6 +69,11 @@ object FixtureJars {
             for (resource in classResources(packagePath)) {
                 out.putNextEntry(JarEntry(resource))
                 out.write(readResource(resource))
+                out.closeEntry()
+            }
+            for ((name, bytes) in extraEntries) {
+                out.putNextEntry(JarEntry(name))
+                out.write(bytes)
                 out.closeEntry()
             }
         }

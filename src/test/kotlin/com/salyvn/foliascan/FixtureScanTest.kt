@@ -87,6 +87,26 @@ class FixtureScanTest {
     }
 
     @Test
+    fun `a patcher-declared folia flag is reported instead of trusted`() {
+        val report = scanner.scan(FixtureJars.patchedByFoliaPhantom())
+        val ids = report.findings.map { it.ruleId }.toSet()
+
+        assertTrue(report.declaresFoliaSupport, "fixture should declare support")
+        assertFalse("FS001" in ids, "the load-time flag is present, so FS001 must not fire")
+        assertTrue("FS002" in ids) { "patcher marker not detected: $ids" }
+
+        val finding = report.findings.first { it.ruleId == "FS002" }
+        assertTrue(finding.evidence.contains("FoliaPhantom"))
+        assertTrue(finding.why.contains("unconditionally"))
+    }
+
+    @Test
+    fun `an unpatched jar is not accused of being patched`() {
+        val ids = scanner.scan(FixtureJars.legacy()).findings.map { it.ruleId }.toSet()
+        assertFalse("FS002" in ids)
+    }
+
+    @Test
     fun `disabling a rule removes only that rule`() {
         val report = JarScanner(ScanOptions(disabledRules = setOf("FS030")))
             .scan(FixtureJars.legacy())

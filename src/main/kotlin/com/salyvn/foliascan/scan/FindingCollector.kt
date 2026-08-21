@@ -20,6 +20,8 @@ class FindingCollector(
      * resolution and off-region taint - but never blamed.
      */
     private val reportable: Set<String> = jar.classes.keys,
+    /** Set when a Folia patcher's marker classes were found in the jar. */
+    private val patched: Pair<PatcherSignature, String>? = null,
 ) {
     var foliaApiUsages: Int = 0
         private set
@@ -29,6 +31,7 @@ class FindingCollector(
 
     fun collect(): List<Finding> {
         collectManifest()
+        collectPatcher()
         for (model in jar.classes.values) {
             val blamed = model.internalName in reportable
             if (blamed) collectSupertypes(model)
@@ -64,6 +67,18 @@ class FindingCollector(
             evidence = "${descriptor.source} has no `$FOLIA_KEY: true`",
             why = rule.why,
             location = CodeLocation(jar = jarName, className = descriptor.source),
+        )
+    }
+
+    private fun collectPatcher() {
+        val rule = RuleCatalog.patchedByTool
+        val (signature, marker) = patched ?: return
+        if (!enabled(rule)) return
+        out += finding(
+            rule = rule,
+            evidence = "${signature.tool} runtime class present: $marker",
+            why = "${rule.why}\n${signature.behaviour} See ${signature.url}.",
+            location = CodeLocation(jar = jarName, className = marker.removeSuffix(".class")),
         )
     }
 

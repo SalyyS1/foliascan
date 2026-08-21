@@ -95,3 +95,16 @@ data class ManifestRule(
     override val fix: String,
     override val provenance: Provenance,
 ) : Rule
+
+/**
+ * Checked against what the jar contains rather than what its code does - used for facts about
+ * the artifact's origin, such as having been rewritten by a patcher.
+ */
+data class ArtifactRule(
+    override val id: String,
+    override val severity: Severity,
+    override val title: String,
+    override val why: String,
+    override val fix: String,
+    override val provenance: Provenance,
+) : Rule

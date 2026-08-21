@@ -43,6 +43,10 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
             val jarClasses = JarClasses(classes)
             val offRegion = OffRegionContextResolver.resolve(jarClasses)
 
+            // Patcher markers sit outside the plugin's own package, so they are looked for in
+            // the raw entry list rather than in the parsed classes.
+            val patched = PatcherDetector.detect(jar.entries().asSequence().map { it.name }.toSet())
+
             // Relocated dependencies stay in the analysis model - they improve supertype
             // resolution and let an async task started inside a shaded library taint the
             // plugin code it calls - but they are not blamed in the report.
@@ -61,6 +65,7 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
                 descriptor = descriptor,
                 disabledRules = options.disabledRules,
                 reportable = reportable,
+                patched = patched,
             )
             val findings = collector.collect()
 
