@@ -24,8 +24,11 @@ class ConsoleReporter(
         appendLine("  main class        ${jar.mainClass ?: "-"}")
         appendLine("  api-version       ${jar.apiVersion ?: "-"}")
         appendLine(
-            "  folia-supported   " +
-                if (jar.declaresFoliaSupport) green("declared") else red("not declared"),
+            "  folia-supported   " + when {
+                !jar.hasDescriptor -> dim("n/a - no plugin descriptor")
+                jar.declaresFoliaSupport -> green("declared")
+                else -> red("not declared")
+            },
         )
         appendLine("  classes scanned   ${jar.classesScanned}")
         appendLine(

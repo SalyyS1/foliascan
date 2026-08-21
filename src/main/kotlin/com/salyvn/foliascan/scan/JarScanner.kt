@@ -74,6 +74,7 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
                 pluginVersion = descriptor?.version,
                 mainClass = descriptor?.main,
                 apiVersion = descriptor?.apiVersion,
+                hasDescriptor = descriptor != null,
                 declaresFoliaSupport = descriptor?.foliaSupported == true,
                 classesScanned = classes.size,
                 foliaApiUsages = collector.foliaApiUsages,

@@ -27,13 +27,15 @@ jobs:
       - name: Build and test
         run: ./gradlew build --no-daemon
 
-      - name: Scan our own fixtures as a smoke test
+      - name: Smoke test the CLI
         run: |
-          # The legacy fixture must be reported, so a scanner that silently stops
-          # finding anything fails the build instead of passing quietly.
-          set -e
-          java -jar build/libs/foliascan-*.jar --rules > /dev/null
-          echo "rule catalog renders"
+          set -euo pipefail
+          CLI=$(ls build/libs/foliascan-*.jar | grep -v -- '-thin' | head -1)
+          echo "using $CLI"
+          # The rule catalog must render, and scanning a jar with no descriptor must be
+          # treated as a library and exit cleanly rather than crash.
+          java -jar "$CLI" --rules > /dev/null
+          java -jar "$CLI" build/libs/foliascan-*-thin.jar --no-color --fail-on never
 
       - name: Upload the CLI jar
         uses: actions/upload-artifact@v4

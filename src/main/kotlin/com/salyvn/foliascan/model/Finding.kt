@@ -82,6 +82,8 @@ data class JarReport(
     val pluginVersion: String? = null,
     val mainClass: String? = null,
     val apiVersion: String? = null,
+    /** False when the jar carries no plugin descriptor at all, i.e. it is a plain library. */
+    val hasDescriptor: Boolean = true,
     val declaresFoliaSupport: Boolean = false,
     /** Class count actually analysed (after package filtering). */
     val classesScanned: Int = 0,
