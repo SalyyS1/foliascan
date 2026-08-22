@@ -55,6 +55,19 @@ class VendoredPackagesTest {
     }
 
     @Test
+    fun `a domain noun is not a library identity`() {
+        // Each of these is a real plugin's own package that a generic list entry used to hide.
+        // A Prometheus exporter's entire job is metrics, so `metrics` hid all four of its
+        // critical findings including the scheduleSyncRepeatingTask call.
+        assertFalse(vendored("de/sldk/mc/metrics/Tps", setOf("de/sldk/mc")))
+        assertFalse(vendored("ranet/coretools/data/mysql/MySqlStore", setOf("ranet/coretools")))
+        assertFalse(
+            vendored("io/lumine/mythiccrucible/skills/mechanics/nbt/SetNbt", setOf("io/lumine/mythiccrucible")),
+        )
+        assertFalse(vendored("io/lumine/mythic/lib/glow/external/GlowHook"))
+    }
+
+    @Test
     fun `an explicit exclusion still matches the whole name`() {
         assertTrue(
             VendoredPackages.isVendored(

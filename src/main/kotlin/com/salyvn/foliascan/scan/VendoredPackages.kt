@@ -20,10 +20,16 @@ package com.salyvn.foliascan.scan
  */
 object VendoredPackages {
 
-    /** Folder names that mean "a dependency was relocated in here". */
+    /**
+     * Folder names that mean "a dependency was relocated in here".
+     *
+     * Restricted to names build tools and their users actually pick for a relocation target.
+     * `external` was removed for the same reason `internal` was: nothing generates it, and plugins
+     * use it for their own integration code (`mythic.lib.glow.external`).
+     */
     val BUILD_SEGMENTS = setOf(
         "libs", "lib", "shaded", "shadow", "shadowed", "thirdparty", "third_party",
-        "dependencies", "external", "vendor", "vendored", "relocated", "repackaged",
+        "dependencies", "vendor", "vendored", "relocated", "repackaged",
     )
 
     /**
@@ -32,10 +38,11 @@ object VendoredPackages {
      * Every entry has to be a *library identity* rather than a domain noun. A generic word buys
      * one relocation and costs every plugin that uses the same word for its own package: `nbt`
      * hid `mythiccrucible.skills.mechanics.nbt`, `annotations` hid `mythicdungeons.api.annotations`,
-     * and `mysql`/`sqlite` hid CoreTools' own database backends - all of them the plugin's own code,
-     * silently exonerated. The distinctive name for each of those libraries is on the list instead
-     * (`nbtapi`, `tr7zw`, `querz`, `jetbrains`), and a shaded JDBC driver is a cheap thing to blame
-     * because a driver never touches the Bukkit API anyway.
+     * `mysql`/`sqlite` hid CoreTools' own database backends, and `metrics` hid all four critical
+     * findings in a Prometheus exporter whose entire job is metrics. All of them the plugin's own
+     * code, silently exonerated. The distinctive name for each of those libraries is on the list
+     * instead (`nbtapi`, `tr7zw`, `querz`, `jetbrains`, `bstats`), and a shaded JDBC driver is a
+     * cheap thing to blame because a driver never touches the Bukkit API anyway.
      */
     val KNOWN_LIBRARIES = setOf(
         // text, config and serialization
@@ -52,7 +59,7 @@ object VendoredPackages {
         "guava", "commons", "apache", "okhttp", "okio", "retrofit", "netty", "caffeine",
         "reflections", "asm", "bytebuddy", "jetbrains", "intellij", "objenesis",
         // metrics and platform glue
-        "bstats", "metrics", "papi", "placeholderapi", "protocollib", "packetevents",
+        "bstats", "papi", "placeholderapi", "protocollib", "packetevents",
         // schedulers and Folia compatibility shims
         "folialib", "foliascheduler", "foliacompat",
     )

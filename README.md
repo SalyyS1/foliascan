@@ -227,10 +227,13 @@ integration packages after the library they integrate with, so `comp.protocollib
 past it, so a library genuinely relocated deeper (`compat/libs/kyori/…`) is still found.
 
 Every entry on the name list has to be a library *identity* rather than a domain noun, for the
-same reason. Measured over eleven real plugin jars, `nbt`, `annotations`, `mysql` and `sqlite`
-only ever matched plugins' own packages and were removed; deleting the list wholesale is not the
-answer either, since one jar that relocates without any marker folder
-(`dev.aurelium.auraskills.acf`, `.kyori`) then produces 74 findings on clean code.
+same reason. Measured over eleven real plugin jars plus a Prometheus exporter, `nbt`,
+`annotations`, `mysql`, `sqlite` and `metrics` only ever matched plugins' own packages and were
+removed — `metrics` hid all four critical findings in an exporter whose entire job is metrics,
+including a `scheduleSyncRepeatingTask` call. `internal` and `external` went too: no build tool
+generates either, and plugins use both constantly. Deleting the list wholesale is not the answer
+either, since one jar that relocates without any marker folder (`dev.aurelium.auraskills.acf`,
+`.kyori`) then produces 74 findings on clean code.
 
 ## Related tools
 
