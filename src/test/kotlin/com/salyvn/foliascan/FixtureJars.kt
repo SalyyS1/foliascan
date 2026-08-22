@@ -52,11 +52,23 @@ object FixtureJars {
         ),
     )
 
+    /**
+     * `main` lives in a platform subpackage while the logic lives in a sibling package - the
+     * layout AuraSkills uses, and the one that exposed the too-narrow scan root.
+     */
+    fun mainInPlatformSubpackage(): Path = build(
+        jarName = "multi-package-plugin",
+        packagePaths = listOf("fixtures/multi/platform/", "fixtures/multi/core/"),
+        main = "fixtures.multi.platform.PlatformEntry",
+        foliaSupported = true,
+    )
+
     private fun build(
         jarName: String,
-        packagePath: String,
         main: String?,
         foliaSupported: Boolean,
+        packagePath: String? = null,
+        packagePaths: List<String> = listOfNotNull(packagePath),
         extraEntries: Map<String, ByteArray> = emptyMap(),
     ): Path {
         val target = Files.createTempFile(jarName, ".jar")
@@ -66,7 +78,7 @@ object FixtureJars {
                 out.write(descriptor(jarName, main, foliaSupported).toByteArray())
                 out.closeEntry()
             }
-            for (resource in classResources(packagePath)) {
+            for (resource in packagePaths.flatMap { classResources(it) }) {
                 out.putNextEntry(JarEntry(resource))
                 out.write(readResource(resource))
                 out.closeEntry()

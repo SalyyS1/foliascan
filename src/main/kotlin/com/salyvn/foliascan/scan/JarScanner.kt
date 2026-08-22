@@ -33,29 +33,36 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
     fun scan(path: Path): JarReport {
         val notes = mutableListOf<String>()
         JarFile(path.toFile()).use { jar ->
+            val entryNames = jar.entries().asSequence().map { it.name }.toSet()
             val descriptor = PluginDescriptorReader.read(jar)
             if (descriptor == null) {
                 notes += "No plugin.yml or paper-plugin.yml found; treating the jar as a library."
             }
 
-            val prefixes = includePrefixes(descriptor, notes)
+            val classNames = entryNames.filter { it.endsWith(".class") }.map { it.removeSuffix(".class") }
+            val prefixes = includePrefixes(descriptor, classNames, notes)
             val classes = readClasses(jar, prefixes, notes)
             val jarClasses = JarClasses(classes)
             val offRegion = OffRegionContextResolver.resolve(jarClasses)
 
             // Patcher markers sit outside the plugin's own package, so they are looked for in
             // the raw entry list rather than in the parsed classes.
-            val patched = PatcherDetector.detect(jar.entries().asSequence().map { it.name }.toSet())
+            val patched = PatcherDetector.detect(entryNames)
 
             // Relocated dependencies stay in the analysis model - they improve supertype
             // resolution and let an async task started inside a shaded library taint the
             // plugin code it calls - but they are not blamed in the report.
-            val excluded = excludedSegments()
-            val reportable = classes.keys.filterNot { isExcluded(it, excluded) }.toSet()
-            val hidden = classes.size - reportable.size
-            if (hidden > 0) {
-                notes += "$hidden relocated dependency class(es) analysed but not reported; " +
-                    "pass --all to report them too."
+            val extraExcludes = options.excludePackages.map { it.replace('.', '/') }.toSet()
+            val vendored = if (options.scanAllPackages) {
+                emptySet()
+            } else {
+                classes.keys.filter { VendoredPackages.isVendored(it, extraExcludes) }.toSet()
+            }
+            val reportable = classes.keys - vendored
+            if (vendored.isNotEmpty()) {
+                val subtrees = VendoredPackages.subtreesIn(vendored, extraExcludes)
+                notes += "${vendored.size} class(es) treated as relocated dependencies and not " +
+                    "blamed: ${subtrees.joinToString(", ")}. Pass --all to report them."
             }
 
             val collector = FindingCollector(
@@ -89,28 +96,55 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
         }
     }
 
-    /** Empty result means "no filter": analyse everything. */
+    /**
+     * The package tree(s) to analyse. Empty means "no filter".
+     *
+     * The plugin's `main` class is often parked in a platform subpackage - AuraSkills declares
+     * `dev.aurelium.auraskills.bukkit.AuraSkills` while most of its code lives in the sibling
+     * `common` and `api` packages - so using main's own package as the root silently skipped the
+     * majority of the plugin. The root is therefore widened to the longest package prefix shared
+     * by every class in the jar, as far as that prefix still lies on main's package path.
+     */
     private fun includePrefixes(
         descriptor: PluginDescriptor?,
+        classNames: List<String>,
         notes: MutableList<String>,
     ): Set<String> {
         if (options.scanAllPackages) return emptySet()
         if (options.includePackages.isNotEmpty()) {
             return options.includePackages.map { it.replace('.', '/') }.toSet()
         }
-        val root = descriptor?.rootPackage()
-        if (root == null) {
+        val mainPackage = descriptor?.rootPackage()
+        if (mainPackage == null) {
             notes += "Could not derive the plugin package from the descriptor; scanned every class."
             return emptySet()
         }
-        notes += "Scanned package ${root.replace('/', '.')} only; pass --all to include shaded code."
+        val root = widenRoot(mainPackage, classNames)
+        notes += "Scanned package ${root.replace('/', '.')} " +
+            "(${classNames.count { it.startsWith("$root/") }} of ${classNames.size} classes in the jar)."
         return setOf(root)
     }
 
-    /** Path segments that mean "a dependency was relocated in here". */
-    private fun excludedSegments(): Set<String> {
-        if (options.scanAllPackages) return emptySet()
-        return RELOCATION_SEGMENTS + options.excludePackages.map { it.replace('.', '/') }
+    /** Walks main's package upward while every class in the jar still shares the prefix. */
+    private fun widenRoot(mainPackage: String, classNames: List<String>): String {
+        val mainSegments = mainPackage.split('/')
+        val shared = commonPackagePrefix(classNames)
+            .zip(mainSegments)
+            .takeWhile { (fromJar, fromMain) -> fromJar == fromMain }
+            .map { it.first }
+        // Two segments is the floor; `com` or `dev` alone would be meaningless as a root.
+        return if (shared.size >= 2) shared.joinToString("/") else mainPackage
+    }
+
+    private fun commonPackagePrefix(classNames: List<String>): List<String> {
+        val packages = classNames.asSequence()
+            .filterNot { it.startsWith("META-INF/") }
+            .map { it.split('/').dropLast(1) }
+            .toList()
+        if (packages.isEmpty()) return emptyList()
+        return packages.reduce { acc, next ->
+            acc.zip(next).takeWhile { it.first == it.second }.map { it.first }
+        }
     }
 
     private fun readClasses(
@@ -140,29 +174,5 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
             notes += "$unreadable class entr(ies) could not be parsed and were skipped."
         }
         return out
-    }
-
-    private fun isExcluded(internalName: String, excluded: Set<String>): Boolean {
-        if (excluded.isEmpty()) return false
-        val segments = internalName.split('/')
-        return excluded.any { candidate ->
-            if ('/' in candidate) {
-                internalName.startsWith(candidate)
-            } else {
-                // Match a whole path segment, so `lib` never swallows `library`.
-                segments.dropLast(1).contains(candidate)
-            }
-        }
-    }
-
-    private companion object {
-        /**
-         * Directory names build tools use when relocating dependencies. Matched as whole path
-         * segments only.
-         */
-        val RELOCATION_SEGMENTS = setOf(
-            "libs", "lib", "shaded", "shadow", "shadowed", "thirdparty", "third_party",
-            "dependencies", "external", "vendor", "relocated", "repackaged",
-        )
     }
 }

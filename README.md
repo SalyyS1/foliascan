@@ -58,14 +58,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.1.1.jar MyPlugin.jar
+java -jar foliascan-0.1.2.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.1.1.jar MyPlugin.jar
+java -jar build/libs/foliascan-0.1.2.jar MyPlugin.jar
 ```
 
 ## Usage
@@ -157,7 +157,12 @@ Severities mean specific things:
 ## How it works
 
 1. Parse every class with ASM. Nothing is loaded or executed, and no bytecode is written.
-2. Read `paper-plugin.yml` / `plugin.yml` for the descriptor and the plugin's own package.
+2. Read `paper-plugin.yml` / `plugin.yml` for the descriptor, then work out the plugin's own
+   package. `main` alone is not enough — plugins commonly park the entry class in a platform
+   subpackage (`dev.aurelium.auraskills.bukkit.AuraSkills`) while most of the code lives in
+   sibling packages, so the root is widened to the longest package prefix every class in the jar
+   shares, as far as that prefix still lies on `main`'s path. The report prints the root it chose
+   and how many of the jar's classes it covers.
 3. Find off-region entry points: a lambda or `Runnable` handed to an executor, a
    `CompletableFuture` async stage, a raw `Thread`, `runTask*Asynchronously`, or Paper's
    `AsyncScheduler`.
@@ -165,10 +170,13 @@ Severities mean specific things:
    task is reported too — with the entry point and depth printed next to the finding.
 5. Apply the rule table, keeping one finding per source line.
 
-Relocated dependency packages (`…/libs/`, `…/shaded/`, `…/vendor/`, and similar segments) are
-analysed but not blamed: a compatibility shim like FoliaLib intentionally contains a legacy
-`BukkitScheduler` implementation for non-Folia servers, so reporting it is noise. They still
-count toward "Folia API usage" and still taint the plugin code they call. `--all` reports them.
+Relocated dependencies are analysed but not blamed. A compatibility shim like FoliaLib
+deliberately contains a legacy `BukkitScheduler` implementation for non-Folia servers, so
+reporting it is noise; the code still counts toward "Folia API usage" and still taints the plugin
+code it calls. Two signals identify it: build-tool folder names (`libs`, `shaded`, `vendor`, …)
+and a curated list of library leaf names, because relocation often leaves no marker folder at all
+(`dev.aurelium.auraskills.kyori`). That list is necessarily incomplete, so every subtree it
+matches is named in the report notes, `--exclude` adds your own, and `--all` turns it off.
 
 ## Related tools
 

@@ -107,6 +107,22 @@ class FixtureScanTest {
     }
 
     @Test
+    fun `sibling packages are scanned when main sits in a platform subpackage`() {
+        val report = scanner.scan(FixtureJars.mainInPlatformSubpackage())
+        val classes = report.findings.map { it.location.className }
+
+        assertTrue(
+            classes.any { it.startsWith("fixtures.multi.core") },
+            "the sibling package next to main was not scanned; findings: $classes",
+        )
+        assertTrue(report.classesScanned >= 2) { "only ${report.classesScanned} class(es) scanned" }
+        assertTrue(
+            report.notes.any { it.contains("fixtures.multi") && !it.contains("fixtures.multi.platform") },
+            "the widened root was not reported: ${report.notes}",
+        )
+    }
+
+    @Test
     fun `disabling a rule removes only that rule`() {
         val report = JarScanner(ScanOptions(disabledRules = setOf("FS030")))
             .scan(FixtureJars.legacy())
