@@ -75,6 +75,26 @@ object FixtureJars {
         foliaSupported = true,
     )
 
+    /**
+     * A descriptor-less jar whose own package is named after a library plugins commonly shade.
+     * The relocation filter must not fire on it: this jar *is* the library, so there is no
+     * plugin code to separate it from.
+     */
+    fun libraryNamedLikeAShadedDependency(): Path = build(
+        jarName = "cloud-library",
+        packagePath = "fixtures/cloud/",
+        main = null,
+        foliaSupported = false,
+    )
+
+    /** The same package, this time as a plugin's own root rather than a relocated subtree. */
+    fun pluginRootedInALibraryName(): Path = build(
+        jarName = "cloud-plugin",
+        packagePath = "fixtures/cloud/",
+        main = "fixtures.cloud.CloudPlugin",
+        foliaSupported = true,
+    )
+
     private fun build(
         jarName: String,
         main: String?,

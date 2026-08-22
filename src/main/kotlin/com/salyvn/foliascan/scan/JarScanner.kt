@@ -53,14 +53,17 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
             // resolution and let an async task started inside a shaded library taint the
             // plugin code it calls - but they are not blamed in the report.
             val extraExcludes = options.excludePackages.map { it.replace('.', '/') }.toSet()
-            val vendored = if (options.scanAllPackages) {
+            // A jar with no descriptor is the library, not a plugin carrying one, so nothing in
+            // it was "relocated inside a plugin" and the whole thing is fair to blame. Without
+            // this, scanning a shaded-library jar directly reports nothing at all.
+            val vendored = if (options.scanAllPackages || descriptor == null) {
                 emptySet()
             } else {
-                classes.keys.filter { VendoredPackages.isVendored(it, extraExcludes) }.toSet()
+                classes.keys.filter { VendoredPackages.isVendored(it, extraExcludes, prefixes) }.toSet()
             }
             val reportable = classes.keys - vendored
             if (vendored.isNotEmpty()) {
-                val subtrees = VendoredPackages.subtreesIn(vendored, extraExcludes)
+                val subtrees = VendoredPackages.subtreesIn(vendored, extraExcludes, prefixes)
                 notes += "${vendored.size} class(es) treated as relocated dependencies and not " +
                     "blamed: ${subtrees.joinToString(", ")}. Pass --all to report them."
             }

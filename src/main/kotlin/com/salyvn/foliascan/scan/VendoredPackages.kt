@@ -9,6 +9,11 @@ package com.salyvn.foliascan.scan
  *    plugins without any such folder. AuraSkills, for example, relocates Adventure to
  *    `dev.aurelium.auraskills.kyori` - no marker segment at all.
  *
+ * Only segments *below* the plugin's own root count. The root itself is never a marker, or
+ * pointing the scanner at one of these libraries directly would exonerate the whole jar -
+ * scanning `IF-0.12.0.jar` would find nothing, because `inventoryframework` is on the list of
+ * things plugins shade.
+ *
  * This is a curated list, so it is incomplete by construction. Whatever it matches is always
  * named in the report notes, and `--all` turns it off, so a wrong guess is visible and
  * overridable rather than silent.
@@ -46,24 +51,45 @@ object VendoredPackages {
     )
 
     /**
-     * True when [internalName] sits inside a relocated dependency tree. [extra] holds
-     * user-supplied package prefixes in internal form.
+     * True when [internalName] sits inside a relocated dependency tree.
+     *
+     * [extra] holds user-supplied package prefixes in internal form, matched against the whole
+     * name because the user named an absolute package. [roots] are the plugin's own package
+     * roots; segments belonging to them are skipped, so only what was relocated *inside* the
+     * plugin can match.
      */
-    fun isVendored(internalName: String, extra: Set<String> = emptySet()): Boolean {
+    fun isVendored(
+        internalName: String,
+        extra: Set<String> = emptySet(),
+        roots: Set<String> = emptySet(),
+    ): Boolean {
         if (extra.any { internalName.startsWith(it) }) return true
-        // Drop the class name; only package segments count.
-        val segments = internalName.split('/').dropLast(1)
-        return segments.any { it in BUILD_SEGMENTS || it in KNOWN_LIBRARIES }
+        return markerIndex(internalName, roots) >= 0
     }
 
     /** The relocated subtrees present, for reporting which ones were skipped. */
-    fun subtreesIn(internalNames: Collection<String>, extra: Set<String> = emptySet()): List<String> =
-        internalNames.filter { isVendored(it, extra) }
-            .mapNotNull { name ->
-                val segments = name.split('/').dropLast(1)
-                val cut = segments.indexOfFirst { it in BUILD_SEGMENTS || it in KNOWN_LIBRARIES }
-                if (cut < 0) null else segments.take(cut + 1).joinToString(".")
-            }
-            .distinct()
-            .sorted()
+    fun subtreesIn(
+        internalNames: Collection<String>,
+        extra: Set<String> = emptySet(),
+        roots: Set<String> = emptySet(),
+    ): List<String> = internalNames.filter { isVendored(it, extra, roots) }
+        .mapNotNull { name ->
+            val cut = markerIndex(name, roots)
+            if (cut < 0) null else name.split('/').take(cut + 1).joinToString(".")
+        }
+        .distinct()
+        .sorted()
+
+    /** Index of the segment that marks a relocated tree, or -1 when there is none. */
+    private fun markerIndex(internalName: String, roots: Set<String>): Int {
+        // Drop the class name; only package segments count.
+        val segments = internalName.split('/').dropLast(1)
+        val owned = roots.filter { internalName.startsWith("$it/") }
+            .maxOfOrNull { it.count { c -> c == '/' } + 1 } ?: 0
+        for (index in owned until segments.size) {
+            val segment = segments[index]
+            if (segment in BUILD_SEGMENTS || segment in KNOWN_LIBRARIES) return index
+        }
+        return -1
+    }
 }

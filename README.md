@@ -214,6 +214,12 @@ and a curated list of library leaf names, because relocation often leaves no mar
 (`dev.aurelium.auraskills.kyori`). That list is necessarily incomplete, so every subtree it
 matches is named in the report notes, `--exclude` adds your own, and `--all` turns it off.
 
+Only segments *below* the plugin's own root count, and a jar with no plugin descriptor is never
+filtered at all — otherwise pointing the scanner at one of those libraries directly would
+exonerate the whole jar. Scanning `IF-0.12.0.jar` should report the two
+`Bukkit.getScheduler().runTask` calls in its `GuiListener`, not "no findings" just because
+`inventoryframework` is a name plugins shade.
+
 ## Related tools
 
 FoliaScan reports; it does not modify your jar.

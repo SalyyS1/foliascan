@@ -185,6 +185,28 @@ class FixtureScanTest {
     }
 
     @Test
+    fun `a library is blamed even when its own name is on the relocated-dependency list`() {
+        val report = scanner.scan(FixtureJars.libraryNamedLikeAShadedDependency())
+
+        assertTrue(report.findings.any { it.ruleId == "FS010" }) {
+            "the jar under test was mistaken for a relocated dependency; notes: ${report.notes}"
+        }
+        assertFalse(
+            report.notes.any { it.contains("relocated") },
+            "nothing was relocated into this jar: ${report.notes}",
+        )
+    }
+
+    @Test
+    fun `a plugin rooted in a library-like package is still blamed`() {
+        val report = scanner.scan(FixtureJars.pluginRootedInALibraryName())
+
+        assertTrue(report.findings.any { it.ruleId == "FS010" }) {
+            "the plugin's own root was treated as a relocation marker; notes: ${report.notes}"
+        }
+    }
+
+    @Test
     fun `disabling a rule removes only that rule`() {
         val report = JarScanner(ScanOptions(disabledRules = setOf("FS030")))
             .scan(FixtureJars.legacy())
