@@ -218,7 +218,19 @@ Only segments *below* the plugin's own root count, and a jar with no plugin desc
 filtered at all — otherwise pointing the scanner at one of those libraries directly would
 exonerate the whole jar. Scanning `IF-0.12.0.jar` should report the two
 `Bukkit.getScheduler().runTask` calls in its `GuiListener`, not "no findings" just because
-`inventoryframework` is a name plugins shade.
+`inventoryframework` is a name plugins shade. The same rule is what keeps MythicLib's own
+`io.lumine.mythic.lib` from reading as a relocation folder because it ends in `lib`.
+
+A name match is also skipped when the segment before it says "adapter": plugins name their own
+integration packages after the library they integrate with, so `comp.protocollib` and
+`hooks.placeholderapi` are the plugin's code, not a copy of the library. The search continues
+past it, so a library genuinely relocated deeper (`compat/libs/kyori/…`) is still found.
+
+Every entry on the name list has to be a library *identity* rather than a domain noun, for the
+same reason. Measured over eleven real plugin jars, `nbt`, `annotations`, `mysql` and `sqlite`
+only ever matched plugins' own packages and were removed; deleting the list wholesale is not the
+answer either, since one jar that relocates without any marker folder
+(`dev.aurelium.auraskills.acf`, `.kyori`) then produces 74 findings on clean code.
 
 ## Related tools
 

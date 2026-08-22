@@ -23,12 +23,19 @@ object VendoredPackages {
     /** Folder names that mean "a dependency was relocated in here". */
     val BUILD_SEGMENTS = setOf(
         "libs", "lib", "shaded", "shadow", "shadowed", "thirdparty", "third_party",
-        "dependencies", "external", "vendor", "vendored", "relocated", "repackaged", "internal",
+        "dependencies", "external", "vendor", "vendored", "relocated", "repackaged",
     )
 
     /**
-     * Library leaf names seen relocated into plugin packages. Grouped by what they are so the
-     * list stays reviewable.
+     * Library leaf names seen relocated into plugin packages.
+     *
+     * Every entry has to be a *library identity* rather than a domain noun. A generic word buys
+     * one relocation and costs every plugin that uses the same word for its own package: `nbt`
+     * hid `mythiccrucible.skills.mechanics.nbt`, `annotations` hid `mythicdungeons.api.annotations`,
+     * and `mysql`/`sqlite` hid CoreTools' own database backends - all of them the plugin's own code,
+     * silently exonerated. The distinctive name for each of those libraries is on the list instead
+     * (`nbtapi`, `tr7zw`, `querz`, `jetbrains`), and a shaded JDBC driver is a cheap thing to blame
+     * because a driver never touches the Bukkit API anyway.
      */
     val KNOWN_LIBRARIES = setOf(
         // text, config and serialization
@@ -38,16 +45,29 @@ object VendoredPackages {
         "acf", "aikar", "cloud", "incendo", "slate", "triumph", "inventoryframework",
         "smartinvs", "fastinv", "guilib",
         // storage and pooling
-        "hikari", "zaxxer", "jooq", "flyway", "sqlite", "mariadb", "mysql", "jedis", "mongodb",
+        "hikari", "zaxxer", "jooq", "flyway",
         // math, nbt and world formats
-        "evalex", "exp4j", "nbtapi", "tr7zw", "querz", "nbt",
+        "evalex", "exp4j", "nbtapi", "tr7zw", "querz",
         // general utility
         "guava", "commons", "apache", "okhttp", "okio", "retrofit", "netty", "caffeine",
-        "reflections", "asm", "bytebuddy", "jetbrains", "intellij", "annotations",
+        "reflections", "asm", "bytebuddy", "jetbrains", "intellij", "objenesis",
         // metrics and platform glue
         "bstats", "metrics", "papi", "placeholderapi", "protocollib", "packetevents",
         // schedulers and Folia compatibility shims
-        "folialib", "foliascheduler", "foliacompat", "scheduling",
+        "folialib", "foliascheduler", "foliacompat",
+    )
+
+    /**
+     * Segments that mean "my adapter for the thing named next", not "the thing named next".
+     *
+     * Plugins name their own integration packages after the library they integrate with, so
+     * `comp.protocollib` and `hooks.placeholderapi` are the plugin's code even though the leaf is
+     * a library name. MythicLib's `comp.protocollib.DamageParticleCap` calls
+     * `Bukkit.getScheduler()` at line 46 and was being hidden by exactly that confusion.
+     */
+    val ADAPTER_SEGMENTS = setOf(
+        "comp", "compat", "compatibility", "hook", "hooks", "integration", "integrations",
+        "bridge", "support", "adapter", "adapters", "impl",
     )
 
     /**
@@ -88,7 +108,11 @@ object VendoredPackages {
             .maxOfOrNull { it.count { c -> c == '/' } + 1 } ?: 0
         for (index in owned until segments.size) {
             val segment = segments[index]
-            if (segment in BUILD_SEGMENTS || segment in KNOWN_LIBRARIES) return index
+            if (segment !in BUILD_SEGMENTS && segment !in KNOWN_LIBRARIES) continue
+            // `comp.protocollib` is an adapter for ProtocolLib, not a copy of it. Keep looking:
+            // a genuinely relocated tree may still sit deeper.
+            if (index > owned && segments[index - 1] in ADAPTER_SEGMENTS) continue
+            return index
         }
         return -1
     }
