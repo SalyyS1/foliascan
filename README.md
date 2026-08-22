@@ -143,16 +143,21 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | FS061 | warning | region-guarded `Block` calls (`getBlockState`, `breakNaturally`, …) |
 | FS062 | warning | region-guarded `BlockState` calls (`getDrops`, `randomTick`) |
 | FS063 | warning | any `org.bukkit.entity` call from an off-region context |
-| FS070 | warning | direct `net.minecraft` / `org.bukkit.craftbukkit` access |
+| FS070 | warning | direct `net.minecraft` / `org.bukkit.craftbukkit` access, one finding per class |
 | FS080 | info | `isPrimaryThread()` used as a safety gate |
 
 Severities mean specific things:
 
 - **blocker** — the plugin will not load at all.
-- **critical** — Folia throws whenever the code runs, on any thread. Reported unconditionally.
+- **critical** — Folia throws whenever the code runs, on any thread. Reported unconditionally,
+  unless the code is behind a Folia guard, in which case it drops to info.
 - **warning** — legal from the region that owns the data, fatal from anywhere else. Only
   reported when the call sits in a context FoliaScan can show is off-region.
 - **info** — behaviour differs enough to need a human decision.
+
+FS070 is deliberately counted per class rather than per call site. An NMS adapter or model engine
+touches server internals thousands of times by design, and enumerating each one buries every other
+finding, so the finding carries the distinct type count instead.
 
 ## How it works
 
@@ -168,7 +173,38 @@ Severities mean specific things:
    `AsyncScheduler`.
 4. Propagate that breadth-first across in-jar call edges, so a helper called from an async
    task is reported too — with the entry point and depth printed next to the finding.
-5. Apply the rule table, keeping one finding per source line.
+5. Find the Folia guards, so the correct non-Folia branch of a dual-platform plugin is not
+   reported as a defect (below).
+6. Apply the rule table, keeping one finding per source line.
+
+### Dual-platform code is not a defect
+
+A plugin that supports both servers has to contain legacy calls, and they are correct precisely
+because they never run on Folia. FoliaScan looks for the guard and downgrades a critical finding
+to **info** when it finds one, naming the guard instead of muting the finding. Both shapes real
+plugins use are recognised:
+
+```kotlin
+// per method - one class, one flag, a branch in every method
+fun runGlobal(task: Runnable) =
+    if (isFolia) Bukkit.getGlobalRegionScheduler().run(plugin) { task.run() }
+    else Bukkit.getScheduler().runTask(plugin, task)
+
+// per class - one interface, two implementations, chosen once at startup
+val scheduler = if (IS_FOLIA) PaperScheduler() else BukkitScheduler()
+```
+
+A method qualifies when it both tests for Folia *and* contains a region-scheduler call; the second
+half is what stops this from muting everything, since unconditional legacy code has no region call
+to pair with the test. A class qualifies when every `new` of it sits in a method that tests for
+Folia — and the test has to be independent of the class itself, or anything named `FoliaScheduler`
+would vacuously guard itself. Lambdas created inside a guarded method inherit the guard, because a
+task built in the legacy branch compiles into its own synthetic method.
+
+Two limits, stated rather than hidden: a class built reflectively or by a DI container has no
+visible `new`, so it stays reported; and there is no control-flow analysis, so a method that tests
+for Folia and *also* calls the legacy scheduler outside the branch is treated as guarded. The first
+errs toward reporting, the second away from it.
 
 Relocated dependencies are analysed but not blamed. A compatibility shim like FoliaLib
 deliberately contains a legacy `BukkitScheduler` implementation for non-Folia servers, so

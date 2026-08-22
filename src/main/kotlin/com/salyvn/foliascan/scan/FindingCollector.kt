@@ -2,6 +2,7 @@ package com.salyvn.foliascan.scan
 
 import com.salyvn.foliascan.model.CodeLocation
 import com.salyvn.foliascan.model.Finding
+import com.salyvn.foliascan.model.Severity
 import com.salyvn.foliascan.rules.CallRule
 import com.salyvn.foliascan.rules.PackageRule
 import com.salyvn.foliascan.rules.Rule
@@ -22,12 +23,17 @@ class FindingCollector(
     private val reportable: Set<String> = jar.classes.keys,
     /** Set when a Folia patcher's marker classes were found in the jar. */
     private val patched: Pair<PatcherSignature, String>? = null,
+    /** Code only reachable behind a runtime Folia check, and where that check is. */
+    private val guards: GuardIndex = GuardIndex.EMPTY,
 ) {
     var foliaApiUsages: Int = 0
         private set
 
     private val out = mutableListOf<Finding>()
-    private val packageRuleSeen = mutableSetOf<String>()
+
+    /** Per class: the distinct internal types it reaches, plus where it was first seen. */
+    private val internalsByClass = LinkedHashMap<String, MutableSet<String>>()
+    private val internalsFirstSite = mutableMapOf<String, CodeLocation>()
 
     fun collect(): List<Finding> {
         collectManifest()
@@ -45,14 +51,15 @@ class FindingCollector(
                     when (insn.kind) {
                         InsnKind.CALL -> {
                             collectCalls(model, method, insn, context)
-                            collectPackages(model, method, insn)
+                            noteInternals(model, method, insn)
                         }
-                        InsnKind.TYPE_REF, InsnKind.FIELD -> collectPackages(model, method, insn)
+                        InsnKind.TYPE_REF, InsnKind.FIELD -> noteInternals(model, method, insn)
                         InsnKind.INDY -> Unit
                     }
                 }
             }
         }
+        collectInternals()
         return dedupe(out)
     }
 
@@ -115,24 +122,41 @@ class FindingCollector(
                 location = location(model, method, insn),
                 contextual = rule.contextual,
                 context = context?.takeIf { rule.contextual }?.let {
-                    "${it.reason} (entry point ${shortKey(it.entryPoint)}, " +
+                    "reached off-region: ${it.reason} (entry point ${shortKey(it.entryPoint)}, " +
                         "${it.depth} call(s) deep)"
                 },
             )
         }
     }
 
-    private fun collectPackages(model: ClassModel, method: MethodModel, insn: Insn) {
+    /**
+     * Records internals access per class instead of per call site. A model engine or NMS adapter
+     * touches server internals thousands of times by design; enumerating each one buries every
+     * other finding, so one finding per class carries the count instead.
+     */
+    private fun noteInternals(model: ClassModel, method: MethodModel, insn: Insn) {
         for (rule in RuleCatalog.packageRules) {
             if (!enabled(rule) || !rule.matches(insn.owner)) continue
-            // One report per class/method/target type; NMS access repeats constantly.
-            val key = "${rule.id}|${model.internalName}|${method.id}|${insn.owner}"
-            if (!packageRuleSeen.add(key)) continue
+            val seen = internalsByClass.getOrPut(model.internalName) { linkedSetOf() }
+            if (seen.isEmpty()) {
+                internalsFirstSite[model.internalName] = location(model, method, insn)
+            }
+            seen += insn.owner
+        }
+    }
+
+    private fun collectInternals() {
+        val rule = RuleCatalog.packageRules.firstOrNull() ?: return
+        if (!enabled(rule)) return
+        for ((className, owners) in internalsByClass) {
+            val location = internalsFirstSite[className] ?: continue
+            val sample = owners.take(3).joinToString(", ") { it.replace('/', '.') }
+            val more = if (owners.size > 3) ", +${owners.size - 3} more" else ""
             out += finding(
                 rule = rule,
-                evidence = insn.owner.replace('/', '.'),
+                evidence = "${owners.size} internal type(s): $sample$more",
                 why = rule.why,
-                location = location(model, method, insn),
+                location = location,
             )
         }
     }
@@ -161,18 +185,24 @@ class FindingCollector(
         location: CodeLocation,
         contextual: Boolean = false,
         context: String? = null,
-    ) = Finding(
-        ruleId = rule.id,
-        severity = rule.severity,
-        title = rule.title,
-        evidence = evidence,
-        why = why,
-        fix = rule.fix,
-        location = location,
-        provenance = rule.provenance.render(),
-        contextual = contextual,
-        context = context,
-    )
+    ): Finding {
+        // Code only reachable behind a runtime Folia check cannot run on Folia, so its legacy
+        // calls are the correct non-Folia branch rather than a defect.
+        val guard = guards.guardFor(location.className.replace('.', '/'), location.method)
+        val downgrade = guard != null && rule.severity == Severity.CRITICAL
+        return Finding(
+            ruleId = rule.id,
+            severity = if (downgrade) Severity.INFO else rule.severity,
+            title = rule.title,
+            evidence = evidence,
+            why = why,
+            fix = rule.fix,
+            location = location,
+            provenance = rule.provenance.render(),
+            contextual = contextual,
+            context = if (downgrade) guard else context,
+        )
+    }
 
     /**
      * A chained statement like `Bukkit.getScheduler().runTaskTimer(...)` matches several rules

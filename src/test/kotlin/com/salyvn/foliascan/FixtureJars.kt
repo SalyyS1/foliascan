@@ -63,6 +63,18 @@ object FixtureJars {
         foliaSupported = true,
     )
 
+    /**
+     * One interface, two implementations, chosen behind a runtime Folia probe - plus an
+     * unguarded class making the same legacy calls, so a test can tell a targeted downgrade
+     * apart from a blanket one.
+     */
+    fun dualMode(): Path = build(
+        jarName = "dual-mode-plugin",
+        packagePath = "fixtures/dualmode/",
+        main = "fixtures.dualmode.DualModePlugin",
+        foliaSupported = true,
+    )
+
     private fun build(
         jarName: String,
         main: String?,

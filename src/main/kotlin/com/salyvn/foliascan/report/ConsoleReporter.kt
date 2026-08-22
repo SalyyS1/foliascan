@@ -64,7 +64,7 @@ class ConsoleReporter(
         val shown = if (verbose) group else group.take(MAX_SITES)
         shown.forEach { f ->
             appendLine("      ${f.location.render()}   ${cyan(f.evidence)}")
-            f.context?.let { appendLine("        ${dim("reached off-region: $it")}") }
+            f.context?.let { appendLine("        ${dim(it)}") }
         }
         if (group.size > shown.size) {
             appendLine("      ${dim("... ${group.size - shown.size} more (use --verbose)")}")

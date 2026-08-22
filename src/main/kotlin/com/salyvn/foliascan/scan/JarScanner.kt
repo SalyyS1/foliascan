@@ -73,6 +73,7 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
                 disabledRules = options.disabledRules,
                 reportable = reportable,
                 patched = patched,
+                guards = FoliaGuardResolver.resolve(jarClasses),
             )
             val findings = collector.collect()
 

@@ -123,6 +123,68 @@ class FixtureScanTest {
     }
 
     @Test
+    fun `a legacy branch behind a Folia check is not reported as a hard failure`() {
+        val report = scanner.scan(FixtureJars.dualMode())
+        val guarded = report.findings.filter { it.location.className.endsWith("LegacyTasks") }
+
+        assertTrue(guarded.isNotEmpty()) {
+            "the guarded legacy branch was not analysed at all; classes seen: " +
+                report.findings.map { it.location.className }.distinct()
+        }
+        assertTrue(
+            guarded.all { it.severity == Severity.INFO },
+            "a provably unreachable branch was still reported as a failure: " +
+                guarded.map { "${it.ruleId}=${it.severity}" },
+        )
+        assertTrue(
+            guarded.all { it.context?.contains("not reachable on Folia") == true },
+            "the downgrade did not say why: ${guarded.map { it.context }}",
+        )
+        assertTrue(
+            guarded.any { it.context!!.contains("IS_FOLIA", ignoreCase = true) },
+            "the guard site was not named: ${guarded.map { it.context }.distinct()}",
+        )
+    }
+
+    @Test
+    fun `a legacy branch inside an otherwise region-aware method is not a hard failure`() {
+        val report = scanner.scan(FixtureJars.dualMode())
+        val branching = report.findings.filter { it.location.className.endsWith("BranchingTasks") }
+
+        assertTrue(branching.isNotEmpty()) {
+            "the branching class was not analysed; classes seen: " +
+                report.findings.map { it.location.className }.distinct()
+        }
+        assertTrue(
+            branching.all { it.severity == Severity.INFO },
+            "a branch guarded in the same method was still reported as a failure: " +
+                branching.map { "${it.location.method}=${it.ruleId}/${it.severity}" },
+        )
+        assertTrue(
+            branching.any { it.location.method?.contains("lambda") == true },
+            "the task built inside the legacy branch was not analysed: " +
+                branching.map { it.location.method },
+        )
+    }
+
+    @Test
+    fun `the same legacy calls are still reported when nothing guards them`() {
+        val report = scanner.scan(FixtureJars.dualMode())
+        val unguarded = report.findings.filter { it.location.className.endsWith("UnguardedTasks") }
+
+        assertTrue(unguarded.isNotEmpty()) {
+            "control class was not analysed; classes seen: " +
+                report.findings.map { it.location.className }.distinct()
+        }
+        assertTrue(
+            unguarded.any { it.severity == Severity.CRITICAL },
+            "the guard downgrade leaked onto unguarded code: " +
+                unguarded.map { "${it.ruleId}=${it.severity}" },
+        )
+        assertEquals(Severity.CRITICAL, report.worst)
+    }
+
+    @Test
     fun `disabling a rule removes only that rule`() {
         val report = JarScanner(ScanOptions(disabledRules = setOf("FS030")))
             .scan(FixtureJars.legacy())

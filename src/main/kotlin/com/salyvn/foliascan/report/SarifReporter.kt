@@ -75,7 +75,7 @@ object SarifReporter {
         put("ruleId", finding.ruleId)
         put("level", level(finding.severity))
         putJsonObject("message") {
-            val reached = finding.context?.let { " Reached off-region: $it." } ?: ""
+            val reached = finding.context?.let { " ${it.replaceFirstChar(Char::uppercaseChar)}." } ?: ""
             put("text", "${finding.title}: ${finding.evidence}.$reached ${finding.why.oneLine()}")
         }
         putJsonArray("locations") {
