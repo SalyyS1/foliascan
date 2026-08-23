@@ -188,8 +188,15 @@ class FindingCollector(
     ): Finding {
         // Code only reachable behind a runtime Folia check cannot run on Folia, so its legacy
         // calls are the correct non-Folia branch rather than a defect.
-        val guard = guards.guardFor(location.className.replace('.', '/'), location.method)
+        val internalName = location.className.replace('.', '/')
+        val guard = guards.guardFor(internalName, location.method)
         val downgrade = guard != null && rule.severity == Severity.CRITICAL
+        // Not provable, so it stays critical; the reader is told what to check instead.
+        val suspicion = if (guard == null && rule.severity == Severity.CRITICAL) {
+            guards.suspicionFor(internalName)
+        } else {
+            null
+        }
         return Finding(
             ruleId = rule.id,
             severity = if (downgrade) Severity.INFO else rule.severity,
@@ -200,7 +207,7 @@ class FindingCollector(
             location = location,
             provenance = rule.provenance.render(),
             contextual = contextual,
-            context = if (downgrade) guard else context,
+            context = guard ?: suspicion ?: context,
         )
     }
 

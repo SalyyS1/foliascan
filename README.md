@@ -206,6 +206,15 @@ visible `new`, so it stays reported; and there is no control-flow analysis, so a
 for Folia and *also* calls the legacy scheduler outside the branch is treated as guarded. The first
 errs toward reporting, the second away from it.
 
+FoliaLib is the case that defeats both shapes, and it is worth knowing about because it is the
+library most Folia-targeting plugins reach for. Its factory does
+`Class.forName(basePackage + implName)`, so nothing ever writes `new SpigotImplementation()` and no
+method of that class tests for Folia — the test lives in the factory, one indirection away, keyed by
+a string. What is still visible is the shape: a class this jar never constructs, sitting next to a
+sibling implementation of the same interface that does use the region API. That earns an explanation
+naming the sibling, and **no change in severity** — it is suggestive, not proof, and a wrong
+all-clear costs more than a wrong warning.
+
 Relocated dependencies are analysed but not blamed. A compatibility shim like FoliaLib
 deliberately contains a legacy `BukkitScheduler` implementation for non-Folia servers, so
 reporting it is noise; the code still counts toward "Folia API usage" and still taints the plugin

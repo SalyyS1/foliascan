@@ -207,6 +207,33 @@ class FixtureScanTest {
     }
 
     @Test
+    fun `a reflectively chosen platform alternate is explained but still reported`() {
+        val report = scanner.scan(FixtureJars.dualMode())
+        val reflective = report.findings.filter { it.location.className.endsWith("ReflectiveTasks") }
+
+        assertTrue(reflective.isNotEmpty()) {
+            "the never-constructed implementation was not analysed; classes seen: " +
+                report.findings.map { it.location.className }.distinct()
+        }
+        assertTrue(
+            reflective.all { it.severity == Severity.CRITICAL },
+            "an unprovable guess lowered severity: " +
+                reflective.map { "${it.ruleId}=${it.severity}" },
+        )
+        assertTrue(
+            reflective.all { it.context?.contains("never constructed in this jar") == true },
+            "the reader was not told what to check: ${reflective.map { it.context }}",
+        )
+        assertTrue(
+            reflective.any { f ->
+                // Either region-aware sibling is a correct answer; both implement Tasks.
+                listOf("RegionTasks", "BranchingTasks").any { f.context!!.contains(it) }
+            },
+            "no region-aware sibling was named: ${reflective.map { it.context }.distinct()}",
+        )
+    }
+
+    @Test
     fun `disabling a rule removes only that rule`() {
         val report = JarScanner(ScanOptions(disabledRules = setOf("FS030")))
             .scan(FixtureJars.legacy())

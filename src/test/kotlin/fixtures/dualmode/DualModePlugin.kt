@@ -69,6 +69,18 @@ class BranchingTasks : Tasks {
     }
 }
 
+/**
+ * The shape FoliaLib uses, which defeats both provable guards: the factory does
+ * `Class.forName(base + name)`, so nothing in the jar ever writes `new ReflectiveTasks()` and no
+ * method here tests for Folia. All that is visible is a sibling of [RegionTasks] that this jar
+ * never constructs, which earns an explanation but not a downgrade.
+ */
+class ReflectiveTasks : Tasks {
+    override fun submit(task: Runnable) {
+        Bukkit.getScheduler().runTask(this, task)
+    }
+}
+
 class DualModePlugin {
 
     fun onEnable() {

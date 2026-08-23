@@ -54,7 +54,44 @@ object FoliaGuardResolver {
     fun resolve(jar: JarClasses): GuardIndex = GuardIndex(
         byClass = guardedClasses(jar),
         byMethod = guardedMethods(jar),
+        suspectedByClass = suspectedPlatformAlternates(jar),
     )
+
+    /**
+     * Classes that look like one arm of a reflectively chosen platform pair.
+     *
+     * FoliaLib is the canonical case and it defeats both provable shapes: `FoliaLib.createServerImpl`
+     * does `Class.forName(basePackage + implName)`, so `SpigotImplementation` has no `new` anywhere
+     * in the jar and no method of it tests for Folia - the test lives in the factory, one indirection
+     * away, keyed by a string.
+     *
+     * What can be seen is the shape: a class that this jar never constructs, sitting next to a
+     * sibling implementation of the same interface that does use the region API. That is suggestive,
+     * not proof, so it only ever attaches an explanation. Severity is left alone - a wrong all-clear
+     * costs more than a wrong warning, and the reader is told exactly what to check.
+     */
+    private fun suspectedPlatformAlternates(jar: JarClasses): Map<String, String> {
+        val constructed = constructionSites(jar).keys
+        val regionAware = jar.classes.values
+            .filter { model -> model.methods.any { it.instructions.any(::isRegionApi) } }
+            .map { it.internalName }
+            .toSet()
+
+        val out = mutableMapOf<String, String>()
+        for (model in jar.classes.values) {
+            if (model.internalName in constructed || model.internalName in regionAware) continue
+            if (model.interfaces.isEmpty()) continue
+            val sibling = regionAware.firstOrNull { other ->
+                other != model.internalName &&
+                    jar.get(other)?.interfaces?.any { it in model.interfaces } == true
+            } ?: continue
+            out[model.internalName] = "never constructed in this jar, and " +
+                "${sibling.substringAfterLast('/')} implements the same interface using the region " +
+                "API - if a factory picks between them at runtime this branch may be unreachable " +
+                "on Folia, which this analysis cannot prove"
+        }
+        return out
+    }
 
     /** Methods that branch on a Folia test and carry the region-aware path themselves. */
     private fun guardedMethods(jar: JarClasses): Map<Pair<String, String>, String> {
@@ -166,12 +203,19 @@ object FoliaGuardResolver {
 class GuardIndex internal constructor(
     private val byClass: Map<String, String>,
     private val byMethod: Map<Pair<String, String>, String>,
+    private val suspectedByClass: Map<String, String> = emptyMap(),
 ) {
     val size: Int get() = byClass.size + byMethod.size
 
     /** A description of the guard covering this location, or null when it is not guarded. */
     fun guardFor(internalName: String, methodName: String?): String? =
         byClass[internalName] ?: byMethod[internalName to (methodName ?: return null)]
+
+    /**
+     * An explanation for code that *looks* like a platform alternate without proving it. Never a
+     * reason to lower severity - only to tell the reader what to verify.
+     */
+    fun suspicionFor(internalName: String): String? = suspectedByClass[internalName]
 
     companion object {
         val EMPTY = GuardIndex(emptyMap(), emptyMap())
