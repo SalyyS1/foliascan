@@ -4,6 +4,7 @@ package fixtures.regionaware
 
 import org.bukkit.Bukkit
 import org.bukkit.Location
+import org.bukkit.World
 import org.bukkit.block.BlockState
 import org.bukkit.entity.Player
 import org.bukkit.event.player.AsyncPlayerChatEvent
@@ -12,6 +13,11 @@ class RegionAwarePlugin {
 
     fun onEnable() {
         Bukkit.getGlobalRegionScheduler().execute(this) { warmCaches() }
+    }
+
+    // GlobalRegionScheduler owns global world state (FS064 like setTime), so this must NOT warn.
+    fun setGlobalTime(world: World) {
+        Bukkit.getGlobalRegionScheduler().execute(this) { world.setTime(6000L) }
     }
 
     fun teleportHome(player: Player, home: Location) {

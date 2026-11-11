@@ -115,6 +115,7 @@ class FindingCollector(
         for (rule in RuleCatalog.callRules) {
             if (!enabled(rule) || !rule.matches(insn.owner, insn.name)) continue
             if (rule.contextual && context == null) continue
+            if (rule.contextual && context?.isGlobalTick == true && (rule.id == "FS050" || rule.id == "FS064")) continue
             out += finding(
                 rule = rule,
                 evidence = "${insn.owner.substringAfterLast('/')}.${insn.name}()",

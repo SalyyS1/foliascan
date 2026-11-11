@@ -79,6 +79,20 @@ class FixtureScanTest {
     }
 
     @Test
+    fun `global region scheduler flags regional block access while permitting global world state`() {
+        val dualReport = scanner.scan(FixtureJars.dualMode())
+        val fruitFindings = dualReport.findings.filter { it.location.method == "placeFruitBlock" }
+        assertTrue(fruitFindings.any { it.ruleId == "FS062" }) {
+            "BlockState#update inside GlobalRegionScheduler callback was not flagged; methods: " +
+                dualReport.findings.mapNotNull { it.location.method }.distinct()
+        }
+        assertTrue(
+            fruitFindings.all { it.context?.contains("GlobalRegionScheduler") == true },
+            "GlobalRegionScheduler origin was not named: ${fruitFindings.map { it.context }}",
+        )
+    }
+
+    @Test
     fun `off-region taint propagates one call deep into a helper`() {
         val report = scanner.scan(FixtureJars.legacy())
         val helper = report.findings.filter { it.location.method == "refreshHelper" }
@@ -190,6 +204,27 @@ class FixtureScanTest {
             branching.any { it.location.method?.contains("lambda") == true },
             "the task built inside the legacy branch was not analysed: " +
                 branching.map { it.location.method },
+        )
+        assertTrue(
+            branching.any { it.location.method == "submitViaWrapper" && it.severity == Severity.INFO },
+            "a branch delegating to an in-jar scheduler wrapper was not downgraded: " +
+                branching.map { "${it.location.method}=${it.severity}" },
+        )
+    }
+
+    @Test
+    fun `an unrelated manager constructed in onEnable alongside a Folia check is still reported`() {
+        val report = scanner.scan(FixtureJars.dualMode())
+        val unrelated = report.findings.filter { it.location.className.endsWith("UnrelatedManager") }
+
+        assertTrue(unrelated.isNotEmpty()) {
+            "UnrelatedManager was not analysed; classes seen: " +
+                report.findings.map { it.location.className }.distinct()
+        }
+        assertTrue(
+            unrelated.any { it.severity == Severity.CRITICAL },
+            "an unrelated manager instantiated in onEnable was falsely treated as a platform alternate: " +
+                unrelated.map { "${it.ruleId}=${it.severity}" },
         )
     }
 

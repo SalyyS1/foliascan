@@ -30,6 +30,7 @@ object VendoredPackages {
     val BUILD_SEGMENTS = setOf(
         "libs", "lib", "shaded", "shadow", "shadowed", "thirdparty", "third_party",
         "dependencies", "vendor", "vendored", "relocated", "repackaged",
+        "bundled", "bundledlibraries",
     )
 
     /**

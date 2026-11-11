@@ -47,13 +47,14 @@ data class CallRule(
     override val provenance: Provenance,
     val owners: Set<String> = emptySet(),
     val ownerPrefixes: Set<String> = emptySet(),
+    val excludeOwners: Set<String> = emptySet(),
     val methods: Set<String> = emptySet(),
     /** Methods that must never match, used to keep the correct Folia API out of the report. */
     val excludeMethods: Set<String> = emptySet(),
     val contextual: Boolean = false,
 ) : Rule {
     fun matches(owner: String, method: String): Boolean {
-        if (method in excludeMethods) return false
+        if (owner in excludeOwners || method in excludeMethods) return false
         val ownerHit = owner in owners || ownerPrefixes.any { owner.startsWith(it) }
         return ownerHit && (methods.isEmpty() || method in methods)
     }

@@ -98,11 +98,16 @@ object FoliaGuardResolver {
     private fun guardedMethods(jar: JarClasses): Map<Pair<String, String>, String> {
         val out = mutableMapOf<Pair<String, String>, String>()
         val pending = ArrayDeque<Pair<MethodKey, String>>()
+        val regionCallTargets = regionAwareMethods(jar)
 
         for (model in jar.classes.values) {
             for (method in model.methods) {
                 val probe = probeIn(method) ?: continue
-                if (method.instructions.none(::isRegionApi)) continue
+                val hasRegionBranch = method.instructions.any { insn ->
+                    isRegionApi(insn) ||
+                        (insn.kind == InsnKind.CALL && (insn.owner to insn.name) in regionCallTargets)
+                }
+                if (!hasRegionBranch) continue
                 val where = MethodKey(model.internalName, method.id)
                 val reason = "not reachable on Folia: " +
                     "${where.owner.substringAfterLast('/')}.${method.id.name} picks its path " +
@@ -127,14 +132,65 @@ object FoliaGuardResolver {
         return out
     }
 
-    /** Classes whose every construction site tests for Folia first. */
+    /**
+     * Methods in the jar that directly invoke the Folia region API or delegate to an in-jar
+     * scheduler interface/wrapper that does (one wrapper hop, excluding lifecycle methods).
+     */
+    private fun regionAwareMethods(jar: JarClasses): Set<Pair<String, String>> {
+        val out = mutableSetOf<Pair<String, String>>()
+        for (model in jar.classes.values) {
+            for (method in model.methods) {
+                if (method.instructions.any(::isRegionApi)) {
+                    out += model.internalName to method.id.name
+                    for (iface in model.interfaces) {
+                        out += iface to method.id.name
+                    }
+                }
+            }
+        }
+        val wrapped = out.toSet()
+        for (model in jar.classes.values) {
+            for (method in model.methods) {
+                val name = method.id.name
+                if (name == "<init>" || name == "<clinit>" || name == "onEnable") continue
+                if (method.instructions.any { it.kind == InsnKind.CALL && (it.owner to it.name) in wrapped }) {
+                    out += model.internalName to name
+                    for (iface in model.interfaces) {
+                        out += iface to name
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /**
+     * Classes whose every construction site tests for Folia first and pairs this class against a
+     * region-aware alternative (or a direct region-API branch) in the same factory method.
+     *
+     * Requiring the factory method to also construct a region-aware class (or call the region API
+     * itself) prevents a plugin's `onEnable()` - which might log `supportsFolia()` once while
+     * instantiating all 20 of its normal managers - from exonerating every manager in the jar.
+     */
     private fun guardedClasses(jar: JarClasses): Map<String, String> {
+        val regionAware = jar.classes.values
+            .filter { model -> model.methods.any { it.instructions.any(::isRegionApi) } }
+            .map { it.internalName }
+            .toSet()
+        val sites = constructionSites(jar)
         val out = mutableMapOf<String, String>()
-        for ((created, callers) in constructionSites(jar)) {
+        for ((created, callers) in sites) {
             if (callers.isEmpty()) continue
-            val guards = callers.map { guardIn(jar, it, created) }
+            val guards = callers.map { guardIn(jar, it, created, regionAware) }
             if (guards.any { it == null }) continue
             out[created] = guards.filterNotNull().distinct().first()
+        }
+        // Nested / inner classes (e.g. `BukkitScheduler$BukkitTask`) constructed inside a guarded
+        // outer class inherit their enclosing class's guard.
+        for (name in jar.classes.keys) {
+            if (name in out || '$' !in name) continue
+            val outer = name.substringBefore('$')
+            out[outer]?.let { out[name] = it }
         }
         return out
     }
@@ -163,15 +219,37 @@ object FoliaGuardResolver {
      * guard would make every such class vacuously guarded - the test has to be independent of
      * the class being tested.
      */
-    private fun guardIn(jar: JarClasses, where: MethodKey, created: String): String? {
+    private fun guardIn(
+        jar: JarClasses,
+        where: MethodKey,
+        created: String,
+        regionAware: Set<String>,
+    ): String? {
         val body = jar.get(where.owner)?.method(where.method) ?: return null
         val createdSimple = created.substringAfterLast('/')
         val visible = body.instructions.filterNot {
             it.owner == created || it.name.contains(createdSimple, ignoreCase = true)
         }
         val probe = probeIn(visible) ?: return null
+        val hasRegionAlternative = body.instructions.any(::isRegionApi) ||
+            body.instructions.any {
+                it.kind == InsnKind.TYPE_REF && it.name == "new" &&
+                    it.owner != created && it.owner in regionAware &&
+                    sharesTypeWith(jar, created, it.owner)
+            }
+        if (!hasRegionAlternative) return null
         return "not reachable on Folia: this class is only instantiated where " +
             "${where.owner.substringAfterLast('/')}.${where.method.name} tests $probe"
+    }
+
+    private fun sharesTypeWith(jar: JarClasses, a: String, b: String): Boolean {
+        val modelA = jar.get(a) ?: return false
+        val modelB = jar.get(b) ?: return false
+        if (modelA.interfaces.any { it in modelB.interfaces }) return true
+        val superA = modelA.superName
+        if (superA != null && superA != "java/lang/Object" && superA == modelB.superName) return true
+        if (superA == b || modelB.superName == a) return true
+        return false
     }
 
     private fun probeIn(method: MethodModel): String? = probeIn(method.instructions)

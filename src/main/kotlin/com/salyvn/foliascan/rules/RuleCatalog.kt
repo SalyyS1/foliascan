@@ -246,9 +246,10 @@ object RuleCatalog {
         owners = setOf("org/bukkit/block/Block"),
         methods = setOf(
             "applyBoneMeal", "breakNaturally", "canPlace", "fluidTick", "getBiome",
-            "getBlockPower", "getBlockState", "getComputedBiome",
-            "isBlockFaceIndirectlyPowered", "randomTick", "rayTrace", "setBiome",
-            "setBlockState", "tick",
+            "getBlockData", "getBlockPower", "getBlockState", "getComputedBiome",
+            "getDrops", "getState", "getType", "isBlockFaceIndirectlyPowered",
+            "isEmpty", "isLiquid", "isPassable", "randomTick", "rayTrace",
+            "setBiome", "setBlockData", "setBlockState", "setType", "tick",
         ),
         contextual = true,
     )
@@ -282,9 +283,17 @@ object RuleCatalog {
             "CraftEntity#getHandle plus ~170 subclass getHandle overrides",
         ),
         ownerPrefixes = setOf("org/bukkit/entity/"),
+        excludeOwners = setOf(
+            "org/bukkit/entity/EntityType",
+            "org/bukkit/entity/SpawnCategory",
+            "org/bukkit/entity/Pose",
+        ),
         // The entity scheduler and the async teleport are the prescribed Folia APIs; flagging
-        // them would contradict FS020 and FS012.
-        excludeMethods = setOf("getScheduler", "teleportAsync"),
+        // them would contradict FS020 and FS012. Enum methods (values, valueOf, name, ordinal)
+        // on nested entity enums (Villager$Profession, Horse$Color, etc.) are static constants.
+        excludeMethods = setOf(
+            "getScheduler", "teleportAsync", "values", "valueOf", "name", "ordinal",
+        ),
         contextual = true,
     )
 

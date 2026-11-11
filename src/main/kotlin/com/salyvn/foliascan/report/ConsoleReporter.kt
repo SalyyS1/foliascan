@@ -44,12 +44,12 @@ class ConsoleReporter(
         }
 
         jar.findings
-            .groupBy { it.ruleId }
+            .groupBy { it.ruleId to it.severity }
             .entries
             .sortedWith(
-                compareByDescending<Map.Entry<String, List<Finding>>> {
-                    it.value.first().severity.rank
-                }.thenBy { it.key },
+                compareByDescending<Map.Entry<Pair<String, Severity>, List<Finding>>> {
+                    it.key.second.rank
+                }.thenBy { it.key.first },
             )
             .forEach { (_, group) -> append(renderGroup(group)) }
     }

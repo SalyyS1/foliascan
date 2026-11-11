@@ -8,6 +8,13 @@ data class OffRegionOrigin(
     val reason: String,
     /** How many in-jar calls away from the entry point this method sits. */
     val depth: Int,
+    /**
+     * True when the task runs on Folia's GlobalRegionScheduler (`region={null}`).
+     * GlobalRegionScheduler owns global server/world state (FS050, FS064), so those rules do not
+     * fire, but it owns no chunks, blocks or entities - touching FS060..FS063 from it throws
+     * `IllegalStateException: Cannot read world asynchronously`.
+     */
+    val isGlobalTick: Boolean = false,
 )
 
 /** Methods that are reachable from an off-region entry point, with the shortest reason found. */
@@ -52,8 +59,9 @@ object OffRegionContextResolver {
     private val REGION_SCHEDULER_SUFFIXES = setOf(
         "/EntityScheduler",
         "/RegionScheduler",
-        "/GlobalRegionScheduler",
     )
+
+    private const val GLOBAL_REGION_SUFFIX = "/GlobalRegionScheduler"
 
     private val REGION_REENTRY_SUBMITTERS = setOf(
         "run", "execute", "runDelayed", "runAtFixedRate",
@@ -83,6 +91,19 @@ object OffRegionContextResolver {
                 method.instructions.forEachIndexed { index, insn ->
                     if (isRegionReentrySubmitter(insn)) {
                         taskHandedTo(method, index, jar)?.let { reentries += it }
+                    } else if (isGlobalRegionSubmitter(insn)) {
+                        taskHandedTo(method, index, jar)?.let { target ->
+                            reentries += target
+                            seeds.putIfAbsent(
+                                target,
+                                OffRegionOrigin(
+                                    here,
+                                    "submitted via GlobalRegionScheduler.${insn.name} (region={null})",
+                                    0,
+                                    isGlobalTick = true,
+                                ),
+                            )
+                        }
                     }
                     val reason = submitterReason(insn) ?: return@forEachIndexed
                     taskHandedTo(method, index, jar)?.let { target ->
@@ -111,6 +132,17 @@ object OffRegionContextResolver {
         if (insn.kind != InsnKind.CALL) return false
         if (insn.name !in REGION_REENTRY_SUBMITTERS) return false
         return REGION_SCHEDULER_SUFFIXES.any { insn.owner.endsWith(it) }
+    }
+
+    /**
+     * True when this instruction schedules a task onto Folia's GlobalRegionScheduler.
+     * The global tick thread (`region={null}`) owns global server/world state (FS050, FS064)
+     * but does NOT own any chunk, block or entity (FS060..FS063).
+     */
+    private fun isGlobalRegionSubmitter(insn: Insn): Boolean {
+        if (insn.kind != InsnKind.CALL) return false
+        if (insn.name !in REGION_REENTRY_SUBMITTERS) return false
+        return insn.owner.endsWith(GLOBAL_REGION_SUFFIX)
     }
 
     /** Returns a description when this instruction hands work to another thread. */

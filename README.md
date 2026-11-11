@@ -121,7 +121,7 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | FS050 | warning | `getTPS`, `getAverageTickTime` read off-region |
 | FS051 | warning | `dispatchCommand` off-region |
 | FS060 | warning | region-guarded `World` calls (`getChunkAt`, `loadChunk`, `unloadChunk`, `createExplosion`, `setBiome`, …) |
-| FS061 | warning | region-guarded `Block` calls (`getBlockState`, `breakNaturally`, …) |
+| FS061 | warning | region-guarded `Block` calls (`getType`, `setType`, `getBlockData`, `setBlockData`, `getBlockState`, `breakNaturally`, …) |
 | FS062 | warning | region-guarded `BlockState` calls (`update`, `getDrops`, `randomTick`) |
 | FS063 | warning | any `org.bukkit.entity` call from an off-region context |
 | FS064 | warning | global-region-guarded `World` calls (`setTime`, `setStorm`, `setGameRule`, `setChunkForceLoaded`, `setMetadata`, …) |
@@ -145,19 +145,23 @@ finding, so the finding carries the distinct type count instead.
 
 1. Parse every class with ASM. Nothing is loaded or executed, and no bytecode is written.
 2. Read `paper-plugin.yml` / `plugin.yml` for the descriptor, then work out the plugin's own
-   package. `main` alone is not enough — plugins commonly park the entry class in a platform
+   package(s). `main` alone is not enough — plugins commonly park the entry class in a platform
    subpackage (`dev.aurelium.auraskills.bukkit.AuraSkills`) while most of the code lives in
-   sibling packages, so the root is widened to the longest package prefix every class in the jar
-   shares, as far as that prefix still lies on `main`'s path. The report prints the root it chose
-   and how many of the jar's classes it covers.
+   sibling packages, and forks often keep the legacy `main` package for addon compatibility while
+   placing new code under `<tld>.<author>.<PluginName>` (e.g. `GravesX` keeping
+   `com.ranull.graves.Graves` alongside `dev.cwhead.GravesX`). FoliaScan widens `main`'s root and
+   includes packages matching the descriptor's plugin name. The report prints the roots it chose
+   and how many of the jar's classes they cover.
 3. Find off-region entry points: a lambda or `Runnable` handed to an executor, a
    `CompletableFuture` async stage, a raw `Thread`, `runTask*Asynchronously`, Paper's
-   `AsyncScheduler`, or a Bukkit/Paper async event handler (`AsyncPlayerChatEvent`,
-   `AsyncChatEvent`, `AsyncPlayerPreLoginEvent`).
+   `AsyncScheduler`, a Bukkit/Paper async event handler (`AsyncPlayerChatEvent`,
+   `AsyncChatEvent`, `AsyncPlayerPreLoginEvent`), or a `GlobalRegionScheduler` callback
+   (`region={null}`, which owns global server/world state `FS050`/`FS064` but owns no chunks,
+   blocks, or entities `FS060`–`FS063`).
 4. Propagate that breadth-first across in-jar call edges, so a helper called from an async
    task is reported too — with the entry point and depth printed next to the finding. Callbacks
-   inside an async method that hop back onto `EntityScheduler`, `RegionScheduler`, or
-   `GlobalRegionScheduler` are recognised as region re-entries and do not inherit off-region taint.
+   inside an async method that hop back onto `EntityScheduler` or `RegionScheduler` are recognised
+   as regional re-entries and do not inherit off-region taint.
 5. Find the Folia guards, so the correct non-Folia branch of a dual-platform plugin is not
    reported as a defect (below).
 6. Apply the rule table, keeping one finding per source line.

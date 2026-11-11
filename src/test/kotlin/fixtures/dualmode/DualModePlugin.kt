@@ -7,6 +7,7 @@
 package fixtures.dualmode
 
 import org.bukkit.Bukkit
+import org.bukkit.block.BlockState
 
 object Platform {
     val IS_FOLIA: Boolean = runCatching {
@@ -67,6 +68,43 @@ class BranchingTasks : Tasks {
             )
         }
     }
+
+    // Branches on `isFolia` and calls an in-jar wrapper around `Tasks` rather than calling
+    // `Bukkit.getGlobalRegionScheduler()` directly in this method body.
+    fun submitViaWrapper(wrapper: SchedulerWrapper, task: Runnable) {
+        if (isFolia) {
+            wrapper.execute(task)
+        } else {
+            Bukkit.getScheduler().runTask(this, task)
+        }
+    }
+}
+
+class SchedulerWrapper(private val delegate: Tasks) {
+    fun execute(task: Runnable) = delegate.submit(task)
+}
+
+/**
+ * Unrelated manager constructed in a startup method that also checks `IS_FOLIA` and constructs
+ * `RegionTasks`. Because `UnrelatedManager` does not share a supertype with `RegionTasks`, it must
+ * not be mistaken for a non-Folia platform alternate.
+ */
+class UnrelatedManager {
+    fun brokenSchedule(task: Runnable) {
+        Bukkit.getScheduler().runTask(this, task)
+    }
+
+    // GlobalRegionScheduler ticks with region={null}, so touching a regional BlockState throws
+    // `Cannot read world asynchronously` (BreweryTeam/Garden#54 pattern).
+    fun touchBlockOnGlobalScheduler(state: BlockState) {
+        Bukkit.getGlobalRegionScheduler().execute(this) {
+            placeFruitBlock(state)
+        }
+    }
+
+    fun placeFruitBlock(state: BlockState) {
+        state.update(true)
+    }
 }
 
 /**
@@ -84,9 +122,16 @@ class ReflectiveTasks : Tasks {
 class DualModePlugin {
 
     fun onEnable() {
-        pick().submit { Unit }
+        val tasks = pick()
+        tasks.submit { Unit }
         alwaysLegacy().submit { Unit }
-        branching().submitRepeating { Unit }
+        val br = branching()
+        br.submitRepeating { Unit }
+        br.submitViaWrapper(SchedulerWrapper(tasks)) { Unit }
+        if (Platform.IS_FOLIA) {
+            RegionTasks().submit { Unit }
+        }
+        UnrelatedManager().brokenSchedule { Unit }
     }
 
     // The guard for the two-implementation shape. Both are constructed here, so this is the only

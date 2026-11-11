@@ -124,9 +124,31 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
             return emptySet()
         }
         val root = widenRoot(mainPackage, classNames)
-        notes += "Scanned package ${root.replace('/', '.')} " +
-            "(${classNames.count { it.startsWith("$root/") }} of ${classNames.size} classes in the jar)."
-        return setOf(root)
+        val roots = linkedSetOf(root)
+        // Forks and multi-author plugins often keep the legacy `main` package for addon
+        // compatibility while placing new code under `<tld>.<author>.<PluginName>` (e.g.
+        // GravesX declares `main: com.ranull.graves.Graves` with 298 classes under
+        // `dev.cwhead.GravesX`). Include any 2- or 3-segment package whose leaf matches the
+        // descriptor's `name`.
+        val slug = descriptor.name?.lowercase()?.filter { it.isLetterOrDigit() }
+        if (slug != null && slug.length >= 4 && slug !in VendoredPackages.KNOWN_LIBRARIES) {
+            for (cls in classNames) {
+                if (cls.startsWith("META-INF/")) continue
+                val segs = cls.split('/').dropLast(1)
+                for (depth in 2..minOf(3, segs.size)) {
+                    val leaf = segs[depth - 1].lowercase().filter { it.isLetterOrDigit() }
+                    if (leaf == slug) {
+                        roots += segs.take(depth).joinToString("/")
+                        break
+                    }
+                }
+            }
+        }
+        val covered = classNames.count { cls -> roots.any { cls.startsWith("$it/") } }
+        val label = roots.joinToString(", ") { it.replace('/', '.') }
+        notes += "Scanned package${if (roots.size > 1) "s" else ""} $label " +
+            "($covered of ${classNames.size} classes in the jar)."
+        return roots
     }
 
     /** Walks main's package upward while every class in the jar still shares the prefix. */
