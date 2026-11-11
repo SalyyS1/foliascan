@@ -49,15 +49,41 @@ object OffRegionContextResolver {
 
     private val PAPER_ASYNC_SUBMITTERS = setOf("runNow", "runDelayed", "runAtFixedRate")
 
+    private val REGION_SCHEDULER_SUFFIXES = setOf(
+        "/EntityScheduler",
+        "/RegionScheduler",
+        "/GlobalRegionScheduler",
+    )
+
+    private val REGION_REENTRY_SUBMITTERS = setOf(
+        "run", "execute", "runDelayed", "runAtFixedRate",
+    )
+
+    private val ASYNC_EVENT_TYPES = setOf(
+        "org/bukkit/event/player/AsyncPlayerChatEvent",
+        "org/bukkit/event/player/AsyncPlayerPreLoginEvent",
+        "io/papermc/paper/event/player/AsyncChatEvent",
+        "io/papermc/paper/event/player/AsyncChatDecorateEvent",
+        "io/papermc/paper/event/player/AsyncChatCommandDecorateEvent",
+        "com/destroystokyo/paper/event/profile/PreLookupProfileEvent",
+    )
+
     private val RUN_METHOD = MethodId("run", "()V")
 
     fun resolve(jar: JarClasses): OffRegionContexts {
         val seeds = mutableMapOf<MethodKey, OffRegionOrigin>()
+        val reentries = mutableSetOf<MethodKey>()
 
         for (model in jar.classes.values) {
             for (method in model.methods) {
                 val here = MethodKey(model.internalName, method.id)
+                asyncEventReason(method.id.desc)?.let { reason ->
+                    seeds.putIfAbsent(here, OffRegionOrigin(here, reason, 0))
+                }
                 method.instructions.forEachIndexed { index, insn ->
+                    if (isRegionReentrySubmitter(insn)) {
+                        taskHandedTo(method, index, jar)?.let { reentries += it }
+                    }
                     val reason = submitterReason(insn) ?: return@forEachIndexed
                     taskHandedTo(method, index, jar)?.let { target ->
                         seeds.putIfAbsent(target, OffRegionOrigin(here, reason, 0))
@@ -65,7 +91,26 @@ object OffRegionContextResolver {
                 }
             }
         }
-        return OffRegionContexts(propagate(seeds, jar))
+        return OffRegionContexts(propagate(seeds, reentries, jar))
+    }
+
+    /** True when the method signature takes a single Bukkit/Paper async event parameter. */
+    private fun asyncEventReason(desc: String): String? {
+        if (!desc.startsWith("(L") || !desc.endsWith(";)V")) return null
+        val paramInternal = desc.removePrefix("(L").removeSuffix(";)V")
+        if (paramInternal !in ASYNC_EVENT_TYPES) return null
+        return "async event handler (${simple(paramInternal)})"
+    }
+
+    /**
+     * True when this instruction hands a task back onto a region or entity scheduler.
+     * A callback scheduled onto a region thread from inside an async task is re-entering
+     * region ownership and must not inherit off-region taint from its enclosing method.
+     */
+    private fun isRegionReentrySubmitter(insn: Insn): Boolean {
+        if (insn.kind != InsnKind.CALL) return false
+        if (insn.name !in REGION_REENTRY_SUBMITTERS) return false
+        return REGION_SCHEDULER_SUFFIXES.any { insn.owner.endsWith(it) }
     }
 
     /** Returns a description when this instruction hands work to another thread. */
@@ -113,6 +158,7 @@ object OffRegionContextResolver {
     /** Breadth-first taint across in-jar call edges, keeping the shortest path to each method. */
     private fun propagate(
         seeds: Map<MethodKey, OffRegionOrigin>,
+        reentries: Set<MethodKey>,
         jar: JarClasses,
     ): Map<MethodKey, OffRegionOrigin> {
         val result = seeds.toMutableMap()
@@ -132,6 +178,7 @@ object OffRegionContextResolver {
 
                     else -> null
                 } ?: continue
+                if (next in reentries) continue
                 if (result.containsKey(next)) continue
                 if (jar.get(next.owner)?.method(next.method) == null) continue
                 result[next] = origin.copy(depth = origin.depth + 1)

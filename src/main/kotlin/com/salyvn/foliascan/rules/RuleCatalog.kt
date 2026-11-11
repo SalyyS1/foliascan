@@ -217,13 +217,15 @@ object RuleCatalog {
         fix = REGION_FIX,
         provenance = Provenance(
             PATCH_SERVER,
-            "CraftWorld ensureTickThread guards: generateTree, getChunkAt, getGameTime, " +
-                "getHighestBlockYAt, isChunkGenerated, loadChunk, refreshChunk, sendGameEvent, setBiome",
+            "CraftWorld ensureTickThread guards: createExplosion, generateTree, getChunkAt, " +
+                "getGameTime, getHighestBlockYAt, isChunkGenerated, loadChunk, refreshChunk, " +
+                "sendGameEvent, setBiome, unloadChunk, unloadChunkRequest",
         ),
         owners = setOf("org/bukkit/World"),
         methods = setOf(
-            "generateTree", "getChunkAt", "getGameTime", "getHighestBlockYAt",
+            "createExplosion", "generateTree", "getChunkAt", "getGameTime", "getHighestBlockYAt",
             "isChunkGenerated", "loadChunk", "refreshChunk", "sendGameEvent", "setBiome",
+            "unloadChunk", "unloadChunkRequest",
         ),
         contextual = true,
     )
@@ -255,12 +257,12 @@ object RuleCatalog {
         id = "FS062",
         severity = Severity.WARNING,
         title = "BlockState call is region-guarded",
-        why = "CraftBlockState#getDrops and #randomTick are wrapped in " +
+        why = "CraftBlockState#update, #getDrops and #randomTick are wrapped in " +
             "TickThread.ensureTickThread and throw off-region.",
         fix = REGION_FIX,
-        provenance = Provenance(PATCH_SERVER, "CraftBlockState#getDrops, #randomTick"),
+        provenance = Provenance(PATCH_SERVER, "CraftBlockState#update, #getDrops, #randomTick"),
         owners = setOf("org/bukkit/block/BlockState"),
-        methods = setOf("getDrops", "randomTick"),
+        methods = setOf("getDrops", "randomTick", "update"),
         contextual = true,
     )
 
@@ -283,6 +285,34 @@ object RuleCatalog {
         // The entity scheduler and the async teleport are the prescribed Folia APIs; flagging
         // them would contradict FS020 and FS012.
         excludeMethods = setOf("getScheduler", "teleportAsync"),
+        contextual = true,
+    )
+
+    private val worldGlobalRegionGuarded = CallRule(
+        id = "FS064",
+        severity = Severity.WARNING,
+        title = "World global-state call requires the global region",
+        why = "Folia wraps these CraftWorld methods in RegionizedServer.ensureGlobalTickThread, " +
+            "which throws IllegalStateException(\"Cannot modify/retrieve ... off of the global " +
+            "region\") unless the calling thread owns the global region.",
+        fix = "Schedule the call on Bukkit.getGlobalRegionScheduler().execute(plugin, task) or " +
+            "GlobalRegionScheduler#run.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftWorld ensureGlobalTickThread guards: getForceLoadedChunks, getMetadata, " +
+                "hasMetadata, isChunkForceLoaded, removeMetadata, setChunkForceLoaded, " +
+                "setClearWeatherDuration, setFullTime, setGameRule, setGameRuleValue, " +
+                "setHardcore, setMetadata, setSpawnLimit, setStorm, setThunderDuration, " +
+                "setThundering, setTicksPerSpawns, setTime, setWeatherDuration",
+        ),
+        owners = setOf("org/bukkit/World"),
+        methods = setOf(
+            "getForceLoadedChunks", "getMetadata", "hasMetadata", "isChunkForceLoaded",
+            "removeMetadata", "setChunkForceLoaded", "setClearWeatherDuration", "setFullTime",
+            "setGameRule", "setGameRuleValue", "setHardcore", "setMetadata", "setSpawnLimit",
+            "setStorm", "setThunderDuration", "setThundering", "setTicksPerSpawns", "setTime",
+            "setWeatherDuration",
+        ),
         contextual = true,
     )
 
@@ -328,7 +358,8 @@ object RuleCatalog {
         bukkitSchedulerGetter, bukkitSchedulerUse, syncTeleport,
         scoreboardRegistration, scoreboardManager, worldLifecycle, tickableTileEntityCount,
         serverMetrics, dispatchCommand, worldRegionGuarded, blockRegionGuarded,
-        blockStateRegionGuarded, entityFamilyRegionGuarded, primaryThreadCheck,
+        blockStateRegionGuarded, entityFamilyRegionGuarded, worldGlobalRegionGuarded,
+        primaryThreadCheck,
     )
 
     val all: List<Rule> = manifestRules + artifactRules + supertypeRules + packageRules + callRules

@@ -41,7 +41,9 @@ class FixtureScanTest {
     fun `off-region findings appear inside executor lambdas`() {
         val contextual = scanner.scan(FixtureJars.legacy()).findings.filter { it.contextual }
         val ids = contextual.map { it.ruleId }.toSet()
-        assertTrue("FS063" in ids) { "entity API in an executor lambda not flagged: $ids" }
+        listOf("FS050", "FS060", "FS062", "FS063", "FS064").forEach { expected ->
+            assertTrue(expected in ids) { "expected contextual rule $expected, got $ids" }
+        }
         assertTrue(
             contextual.all { it.context != null },
             "a contextual finding did not explain how the code is reached off-region",
@@ -50,6 +52,30 @@ class FixtureScanTest {
             contextual.any { it.context!!.contains("ExecutorService.submit") },
             "executor entry point was not named: ${contextual.map { it.context }.distinct()}",
         )
+    }
+
+    @Test
+    fun `async bukkit event handlers are seeded as off-region entry points`() {
+        val report = scanner.scan(FixtureJars.legacy())
+        val chatFindings = report.findings.filter { it.location.method == "onAsyncChat" }
+        assertTrue(chatFindings.isNotEmpty()) {
+            "AsyncPlayerChatEvent handler touching Player was not flagged; methods: " +
+                report.findings.mapNotNull { it.location.method }.distinct()
+        }
+        assertTrue(chatFindings.any { it.ruleId == "FS063" })
+        assertTrue(
+            chatFindings.all { it.context?.contains("AsyncPlayerChatEvent") == true },
+            "async event origin was not named: ${chatFindings.map { it.context }}",
+        )
+    }
+
+    @Test
+    fun `hopping from async context onto entity or region scheduler clears off-region taint`() {
+        val report = scanner.scan(FixtureJars.regionAware())
+        assertTrue(report.findings.isEmpty()) {
+            "region re-entry callback inside async task was falsely flagged: " +
+                report.findings.map { "${it.ruleId}@${it.location.render()} (${it.context})" }
+        }
     }
 
     @Test

@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 560" width="920" height="560">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#161b22"/>
+    </linearGradient>
+    <style>
+      .mono { font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace; font-size: 13px; }
+      .title { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; fill: #8b949e; }
+      .bold { font-weight: 700; }
+      .fg { fill: #e6edf3; }
+      .dim { fill: #7d8590; }
+      .red { fill: #ff7b72; }
+      .yellow { fill: #d29922; }
+      .green { fill: #3fb950; }
+      .cyan { fill: #79c0ff; }
+      .blocker-txt { fill: #ffffff; font-weight: 700; }
+    </style>
+  </defs>
+
+  <rect width="920" height="560" rx="10" fill="url(#bgGrad)" stroke="#30363d" stroke-width="1.5"/>
+  <rect width="920" height="36" rx="10" fill="#161b22"/>
+  <rect y="26" width="920" height="10" fill="#161b22"/>
+  <line x1="0" y1="36" x2="920" y2="36" stroke="#30363d" stroke-width="1"/>
+
+  <circle cx="20" cy="18" r="6" fill="#ff5f56"/>
+  <circle cx="40" cy="18" r="6" fill="#ffbd2e"/>
+  <circle cx="60" cy="18" r="6" fill="#27c93f"/>
+  <text x="460" y="22" text-anchor="middle" class="title">foliascan — java -jar foliascan-0.2.0.jar SkyArena.jar</text>
+
+  <g transform="translate(24, 62)" class="mono">
+    <text x="0" y="0" class="fg"><tspan class="green">$</tspan> java -jar foliascan-0.2.0.jar SkyArena.jar</text>
+    <text x="0" y="26" class="fg bold">FoliaScan 0.2.0</text>
+
+    <text x="0" y="52" class="fg bold">SkyArena 2.4.1  (SkyArena.jar)</text>
+    <text x="0" y="72" class="fg">  main class        com.example.skyarena.SkyArenaPlugin</text>
+    <text x="0" y="92" class="fg">  api-version       1.21</text>
+    <text x="0" y="112" class="fg">  folia-supported   <tspan class="red">not declared</tspan></text>
+    <text x="0" y="132" class="fg">  classes scanned   186</text>
+    <text x="0" y="152" class="fg">  Folia API usage   2 call site(s)</text>
+    <text x="0" y="172" class="fg">  note              <tspan class="dim">42 class(es) treated as relocated dependencies and not blamed: com.example.skyarena.kyori</tspan></text>
+    <text x="0" y="192" class="fg">  note              <tspan class="dim">5 method(s) are reachable from an off-region entry point.</tspan></text>
+
+    <rect x="14" y="210" width="78" height="18" rx="3" fill="#da3633"/>
+    <text x="20" y="223" class="blocker-txt">BLOCKER</text>
+    <text x="100" y="223" class="fg"><tspan class="bold">FS001</tspan>  Plugin does not declare folia-supported: true</text>
+    <text x="0" y="243" class="fg">      plugin.yml   <tspan class="cyan">plugin.yml has no `folia-supported: true`</tspan></text>
+
+    <text x="0" y="273" class="fg">  <tspan class="red bold">CRITICAL</tspan> <tspan class="bold">FS030</tspan>  Scoreboard registration is not implemented on Folia  <tspan class="dim">(2 sites)</tspan></text>
+    <text x="0" y="293" class="fg">      com.example.skyarena.hud.ArenaBoard#setup (ArenaBoard.kt:48)   <tspan class="cyan">Scoreboard.registerNewObjective()</tspan></text>
+    <text x="0" y="313" class="fg">      com.example.skyarena.hud.ArenaBoard#setup (ArenaBoard.kt:55)   <tspan class="cyan">Scoreboard.registerNewTeam()</tspan></text>
+
+    <text x="0" y="343" class="fg">   <tspan class="yellow bold">WARNING</tspan> <tspan class="bold">FS063</tspan>  Entity API touched from an off-region context  <tspan class="dim">(2 sites)</tspan></text>
+    <text x="0" y="363" class="fg">      com.example.skyarena.chat.ChatListener#onChat (ChatListener.kt:31)   <tspan class="cyan">Player.getHealth()</tspan></text>
+    <text x="0" y="381" class="dim">        reached off-region: async event handler (AsyncPlayerChatEvent) (entry point ChatListener.onChat, 0 call(s) deep)</text>
+    <text x="0" y="401" class="fg">      com.example.skyarena.stats.StatSync#flushHelper (StatSync.kt:94)   <tspan class="cyan">Player.sendMessage()</tspan></text>
+    <text x="0" y="419" class="dim">        reached off-region: handed to ExecutorService.submit (entry point StatSync.flushAsync, 1 call(s) deep)</text>
+
+    <text x="0" y="447" class="fg">      <tspan class="cyan bold">INFO</tspan> <tspan class="bold">FS010</tspan>  Legacy BukkitScheduler is dead on Folia</text>
+    <text x="0" y="465" class="dim">        not reachable on Folia: SchedulerBridge.runGlobal picks its path from isFolia and has a region-scheduler branch</text>
+
+    <text x="0" y="492" class="fg">Summary: 1 blocker, 2 critical, 2 warning, 1 info</text>
+  </g>
+</svg>

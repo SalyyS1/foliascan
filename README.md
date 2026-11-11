@@ -3,31 +3,12 @@
 Tell whether a Minecraft plugin jar will actually survive on [Folia](https://github.com/PaperMC/Folia)
 — by reading its bytecode, not its README.
 
-```
-$ foliascan MyPlugin.jar
-
-MyPlugin 1.4.2  (MyPlugin.jar)
-  folia-supported   not declared
-  classes scanned   214
-  Folia API usage   0 call site(s) (no migration work detected)
-
-   BLOCKER   FS001  Plugin does not declare folia-supported: true
-      plugin.yml   plugin.yml has no `folia-supported: true`
-
-  CRITICAL FS030  Scoreboard registration is not implemented on Folia  (2 sites)
-      com.example.hud.HudService#build (HudService.java:61)   Scoreboard.registerNewObjective()
-      com.example.hud.HudService#team (HudService.java:74)    Scoreboard.registerNewTeam()
-
-   WARNING FS063  Entity API touched from an off-region context
-      com.example.stats.Collector#flush (Collector.java:88)   Player.getHealth()
-        reached off-region: handed to ExecutorService.submit (entry point Collector.schedule, 2 call(s) deep)
-
-Summary: 1 blocker, 2 critical, 1 warning, 0 info
-Verdict: Will not load on Folia.
-```
+![FoliaScan Terminal Output](assets/terminal-demo.svg)
 
 Works on any jar — including one you did not compile. Server owners can check a paid plugin
 before installing it; developers can gate a release in CI.
+
+![FoliaScan Bytecode Analysis Pipeline](assets/taint-and-guard-pipeline.svg)
 
 ## Why this exists
 
@@ -58,14 +39,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.1.2.jar MyPlugin.jar
+java -jar foliascan-0.2.0.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.1.2.jar MyPlugin.jar
+java -jar build/libs/foliascan-0.2.0.jar MyPlugin.jar
 ```
 
 ## Usage
@@ -139,10 +120,11 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | FS041 | critical | `World#getTickableTileEntityCount` |
 | FS050 | warning | `getTPS`, `getAverageTickTime` read off-region |
 | FS051 | warning | `dispatchCommand` off-region |
-| FS060 | warning | region-guarded `World` calls (`getChunkAt`, `loadChunk`, `setBiome`, …) |
+| FS060 | warning | region-guarded `World` calls (`getChunkAt`, `loadChunk`, `unloadChunk`, `createExplosion`, `setBiome`, …) |
 | FS061 | warning | region-guarded `Block` calls (`getBlockState`, `breakNaturally`, …) |
-| FS062 | warning | region-guarded `BlockState` calls (`getDrops`, `randomTick`) |
+| FS062 | warning | region-guarded `BlockState` calls (`update`, `getDrops`, `randomTick`) |
 | FS063 | warning | any `org.bukkit.entity` call from an off-region context |
+| FS064 | warning | global-region-guarded `World` calls (`setTime`, `setStorm`, `setGameRule`, `setChunkForceLoaded`, `setMetadata`, …) |
 | FS070 | warning | direct `net.minecraft` / `org.bukkit.craftbukkit` access, one finding per class |
 | FS080 | info | `isPrimaryThread()` used as a safety gate |
 
@@ -169,10 +151,13 @@ finding, so the finding carries the distinct type count instead.
    shares, as far as that prefix still lies on `main`'s path. The report prints the root it chose
    and how many of the jar's classes it covers.
 3. Find off-region entry points: a lambda or `Runnable` handed to an executor, a
-   `CompletableFuture` async stage, a raw `Thread`, `runTask*Asynchronously`, or Paper's
-   `AsyncScheduler`.
+   `CompletableFuture` async stage, a raw `Thread`, `runTask*Asynchronously`, Paper's
+   `AsyncScheduler`, or a Bukkit/Paper async event handler (`AsyncPlayerChatEvent`,
+   `AsyncChatEvent`, `AsyncPlayerPreLoginEvent`).
 4. Propagate that breadth-first across in-jar call edges, so a helper called from an async
-   task is reported too — with the entry point and depth printed next to the finding.
+   task is reported too — with the entry point and depth printed next to the finding. Callbacks
+   inside an async method that hop back onto `EntityScheduler`, `RegionScheduler`, or
+   `GlobalRegionScheduler` are recognised as region re-entries and do not inherit off-region taint.
 5. Find the Folia guards, so the correct non-Folia branch of a dual-platform plugin is not
    reported as a defect (below).
 6. Apply the rule table, keeping one finding per source line.

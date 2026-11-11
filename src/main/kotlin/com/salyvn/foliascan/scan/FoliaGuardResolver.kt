@@ -50,6 +50,7 @@ object FoliaGuardResolver {
 
     private const val REGION_PACKAGE = "io/papermc/paper/threadedregions/"
     private const val BRAND_CHECK = "isBrandCompatible"
+    private val FOLIA_THREAD_CHECKS = setOf("isGlobalTickThread", "isOwnedByCurrentRegion")
 
     fun resolve(jar: JarClasses): GuardIndex = GuardIndex(
         byClass = guardedClasses(jar),
@@ -181,6 +182,9 @@ object FoliaGuardResolver {
             if (insn.name.contains("folia", ignoreCase = true)) return insn.name
             if (insn.kind == InsnKind.CALL && insn.name == BRAND_CHECK) {
                 return "ServerBuildInfo.$BRAND_CHECK"
+            }
+            if (insn.kind == InsnKind.CALL && insn.name in FOLIA_THREAD_CHECKS) {
+                return "${insn.owner.substringAfterLast('/')}.${insn.name}"
             }
         }
         return null

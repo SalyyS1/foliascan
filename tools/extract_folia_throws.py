@@ -18,6 +18,7 @@ from pathlib import Path
 SIGNALS = (
     ("unsupported", re.compile(r"throw new UnsupportedOperationException\((.*)\)")),
     ("thread_check", re.compile(r"TickThread\.ensureTickThread\((.*)\)")),
+    ("global_thread_check", re.compile(r"RegionizedServer\.ensureGlobalTickThread\((.*)\)")),
     ("deprecated", re.compile(r"^\s*@Deprecated\b")),
 )
 
@@ -137,6 +138,7 @@ def main() -> int:
     print(f"total signal sites   : {len(findings)}")
     print(f"  unsupported        : {sum(1 for f in findings if f.kind == 'unsupported')}")
     print(f"  thread_check       : {sum(1 for f in findings if f.kind == 'thread_check')}")
+    print(f"  global_thread_check: {sum(1 for f in findings if f.kind == 'global_thread_check')}")
     print(f"  deprecated         : {sum(1 for f in findings if f.kind == 'deprecated')}")
     print(f"api-facing (bukkit)  : {len(api_facing)}")
     print()

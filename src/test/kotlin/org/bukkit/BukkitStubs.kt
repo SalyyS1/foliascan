@@ -15,6 +15,10 @@ class Location(val world: World?, val x: Double, val y: Double, val z: Double)
 interface World {
     fun getChunkAt(x: Int, z: Int): Any?
     fun loadChunk(x: Int, z: Int): Boolean
+    fun unloadChunk(x: Int, z: Int): Boolean
+    fun createExplosion(x: Double, y: Double, z: Double, power: Float): Boolean
+    fun setTime(time: Long)
+    fun setStorm(hasStorm: Boolean)
     fun getTickableTileEntityCount(): Int
     fun getHighestBlockYAt(x: Int, z: Int): Int
 }

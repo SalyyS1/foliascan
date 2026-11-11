@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 300" width="920" height="300">
+  <defs>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#161b22"/>
+      <stop offset="100%" stop-color="#0d1117"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#58a6ff"/>
+    </marker>
+    <style>
+      .sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+      .mono { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; }
+      .h1 { font-size: 15px; font-weight: 700; fill: #e6edf3; }
+      .box-title { font-size: 13px; font-weight: 700; fill: #58a6ff; }
+      .box-sub { font-size: 11px; fill: #8b949e; }
+      .badge { font-size: 10.5px; font-weight: 600; fill: #3fb950; }
+      .warn-badge { font-size: 10.5px; font-weight: 600; fill: #d29922; }
+    </style>
+  </defs>
+
+  <rect width="920" height="300" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
+  <text x="24" y="32" class="sans h1">FoliaScan Static Bytecode Taint, Guard &amp; Relocation Pipeline</text>
+
+  <!-- Step 1: ASM ClassReader -->
+  <rect x="20" y="54" width="160" height="218" rx="8" fill="url(#cardGrad)" stroke="#30363d" stroke-width="1.2"/>
+  <text x="34" y="78" class="sans box-title">1. ASM ClassReader</text>
+  <text x="34" y="98" class="sans box-sub">Read-only bytecode scan</text>
+  <text x="34" y="122" class="mono box-sub">• plugin.yml / paper</text>
+  <text x="34" y="140" class="mono box-sub">• Widen package root</text>
+  <text x="34" y="158" class="mono box-sub">• CALL / INDY / NEW</text>
+  <text x="34" y="176" class="mono box-sub">• LineNumberTable</text>
+  <text x="34" y="194" class="mono box-sub">• PatcherDetector</text>
+  <text x="34" y="246" class="mono badge">No classloading</text>
+
+  <line x1="180" y1="163" x2="204" y2="163" stroke="#58a6ff" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <!-- Step 2: OffRegionContextResolver -->
+  <rect x="208" y="54" width="220" height="218" rx="8" fill="url(#cardGrad)" stroke="#30363d" stroke-width="1.2"/>
+  <text x="222" y="78" class="sans box-title">2. Off-Region Taint BFS</text>
+  <text x="222" y="98" class="sans box-sub">OffRegionContextResolver</text>
+  <text x="222" y="122" class="mono box-sub">Seeds:</text>
+  <text x="222" y="138" class="mono box-sub">• Executor / Future</text>
+  <text x="222" y="154" class="mono box-sub">• AsyncScheduler.run*</text>
+  <text x="222" y="170" class="mono box-sub">• Async*Event handlers</text>
+  <text x="222" y="194" class="mono badge">De-Taint Re-Entry:</text>
+  <text x="222" y="210" class="mono box-sub">• EntityScheduler.run</text>
+  <text x="222" y="226" class="mono box-sub">• RegionScheduler.run</text>
+  <text x="222" y="246" class="mono warn-badge">Tracks entry + depth</text>
+
+  <line x1="428" y1="163" x2="452" y2="163" stroke="#58a6ff" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <!-- Step 3: FoliaGuardResolver & VendoredPackages -->
+  <rect x="456" y="54" width="225" height="218" rx="8" fill="url(#cardGrad)" stroke="#30363d" stroke-width="1.2"/>
+  <text x="470" y="78" class="sans box-title">3. Guards &amp; Relocation</text>
+  <text x="470" y="98" class="sans box-sub">Zero false-positive noise</text>
+  <text x="470" y="122" class="mono box-sub">FoliaGuardResolver:</text>
+  <text x="470" y="138" class="mono box-sub">• Method: isFolia + region</text>
+  <text x="470" y="154" class="mono box-sub">• Class: all new guarded</text>
+  <text x="470" y="170" class="mono box-sub">• Reflective sibling note</text>
+  <text x="470" y="194" class="mono box-sub">VendoredPackages:</text>
+  <text x="470" y="210" class="mono box-sub">• Skips shaded libs</text>
+  <text x="470" y="226" class="mono box-sub">• Keeps comp.*/hooks.*</text>
+  <text x="470" y="246" class="mono badge">CRITICAL -&gt; INFO on guard</text>
+
+  <line x1="681" y1="163" x2="705" y2="163" stroke="#58a6ff" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <!-- Step 4: RuleCatalog & Outputs -->
+  <rect x="709" y="54" width="191" height="218" rx="8" fill="url(#cardGrad)" stroke="#30363d" stroke-width="1.2"/>
+  <text x="723" y="78" class="sans box-title">4. Provenance &amp; CI</text>
+  <text x="723" y="98" class="sans box-sub">16 Folia-patch rules</text>
+  <text x="723" y="122" class="mono box-sub">• FS001-FS041 Blk/Crit</text>
+  <text x="723" y="140" class="mono box-sub">• FS050-FS064 Contextual</text>
+  <text x="723" y="158" class="mono box-sub">• FS070-FS080 Internals</text>
+  <text x="723" y="182" class="mono box-sub">Outputs:</text>
+  <text x="723" y="198" class="mono box-sub">• Console ANSI</text>
+  <text x="723" y="214" class="mono box-sub">• JSON + Baseline</text>
+  <text x="723" y="230" class="mono box-sub">• SARIF 2.1.0 (CodeQL)</text>
+  <text x="723" y="246" class="mono badge">Line-free fingerprints</text>
+</svg>

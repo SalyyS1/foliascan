@@ -243,6 +243,7 @@ class FindingCollector(
         const val FOLIA_KEY = "folia-supported"
         val FOLIA_GETTERS = setOf(
             "getGlobalRegionScheduler", "getRegionScheduler", "getAsyncScheduler",
+            "isGlobalTickThread", "isOwnedByCurrentRegion", "getRegionTPS",
         )
     }
 }

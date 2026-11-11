@@ -4,7 +4,10 @@ package fixtures.legacy
 
 import org.bukkit.Bukkit
 import org.bukkit.Location
+import org.bukkit.World
+import org.bukkit.block.BlockState
 import org.bukkit.entity.Player
+import org.bukkit.event.player.AsyncPlayerChatEvent
 import org.bukkit.scheduler.BukkitRunnable
 import java.util.concurrent.Executors
 
@@ -39,6 +42,21 @@ class LegacyPlugin {
             player.sendMessage("health ${player.getHealth()}")
             reportTps(Bukkit.getTPS())
         }
+    }
+
+    // FS060 (unloadChunk), FS062 (BlockState#update) and FS064 (World#setTime) inside an async task
+    fun mutateWorldOffRegion(world: World, state: BlockState) {
+        Executors.newSingleThreadExecutor().submit {
+            world.unloadChunk(0, 0)
+            world.setTime(6000L)
+            state.update(true)
+        }
+    }
+
+    // Off-region seed from a Bukkit AsyncPlayerChatEvent listener touching Player & World directly
+    fun onAsyncChat(event: AsyncPlayerChatEvent) {
+        val p = event.player
+        p.sendMessage("hp=${p.getHealth()}")
     }
 
     // Off-region propagation: the lambda calls a helper, the helper touches the entity API.
