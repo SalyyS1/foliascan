@@ -1,0 +1,2563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FoliaScan Browser Bytecode Scanner - Zero-Upload Folia Plugin JAR Compatibility Matrix</title>
+  <meta name="description" content="100% client-side Minecraft Paper and Folia plugin .jar bytecode scanner. Unpacks ZIP headers and 0xCAFEBABE JVM constant pools locally in your browser with zero uploads.">
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --bg-elevated: #111820;
+      --panel: #151d27;
+      --panel-hover: #1b2532;
+      --border: #283545;
+      --border-strong: #3b4f66;
+      --fg: #e6edf3;
+      --muted: #91a1b5;
+      --dim: #68788c;
+      --accent: #58a6ff;
+      --accent-soft: rgba(88, 166, 255, 0.14);
+      --pass: #3fb950;
+      --pass-bg: rgba(63, 185, 80, 0.14);
+      --patched: #d29922;
+      --patched-bg: rgba(210, 153, 34, 0.16);
+      --fail: #ff7b72;
+      --fail-bg: rgba(248, 81, 73, 0.16);
+      --blocker: #da3633;
+      --critical: #ff7b72;
+      --warning: #d29922;
+      --info: #79c0ff;
+      --mono: "JetBrains Mono", "Cascadia Code", "Fira Code", "SFMono-Regular", Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(88, 166, 255, 0.09), transparent 34rem),
+        radial-gradient(circle at 88% 8%, rgba(63, 185, 80, 0.06), transparent 30rem),
+        var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      line-height: 1.55;
+      min-height: 100vh;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .topbar {
+      border-bottom: 1px solid var(--border);
+      background: rgba(17, 24, 32, 0.9);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(10px);
+    }
+
+    .topbar-inner {
+      max-width: 1260px;
+      margin: 0 auto;
+      padding: 12px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--mono);
+      font-weight: 700;
+      font-size: 0.98rem;
+      color: var(--fg);
+    }
+
+    .brand-tag {
+      font-size: 0.72rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      font-size: 0.85rem;
+      font-family: var(--mono);
+    }
+
+    .container {
+      max-width: 1260px;
+      margin: 0 auto;
+      padding: 28px 20px 64px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.35fr 1fr;
+      gap: 20px;
+      margin-bottom: 22px;
+    }
+
+    @media (max-width: 960px) {
+      .hero { grid-template-columns: 1fr; }
+    }
+
+    .hero-card, .side-card, .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 22px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 1.75rem;
+      line-height: 1.25;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 0.97rem;
+    }
+
+    .privacy-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(63, 185, 80, 0.4);
+      background: var(--pass-bg);
+      color: #7ee787;
+      font-family: var(--mono);
+      font-size: 0.79rem;
+    }
+
+    .dropzone {
+      margin-top: 18px;
+      border: 2px dashed var(--border-strong);
+      border-radius: 10px;
+      background: var(--bg-elevated);
+      padding: 28px 20px;
+      text-align: center;
+      transition: border-color 140ms ease, background-color 140ms ease;
+      cursor: pointer;
+    }
+
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(88, 166, 255, 0.07);
+    }
+
+    .dropzone-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin: 0 0 6px;
+    }
+
+    .dropzone-hint {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 0.87rem;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    button, .btn-link {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 9px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border-strong);
+      background: var(--panel-hover);
+      color: var(--fg);
+      cursor: pointer;
+      transition: border-color 140ms ease, background-color 140ms ease;
+    }
+
+    button:hover, .btn-link:hover {
+      border-color: var(--accent);
+      background: rgba(88, 166, 255, 0.14);
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: #1f6feb;
+      border-color: #388bfd;
+      color: #ffffff;
+    }
+
+    .btn-primary:hover {
+      background: #388bfd;
+      border-color: #58a6ff;
+    }
+
+    .controls-bar {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 0.86rem;
+    }
+
+    .checkbox-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      color: var(--fg);
+      user-select: none;
+    }
+
+    .checkbox-label input {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
+
+    .side-card h2 {
+      margin: 0 0 10px;
+      font-size: 1rem;
+      font-family: var(--mono);
+    }
+
+    .code-snippet {
+      margin: 10px 0;
+      padding: 12px;
+      border-radius: 6px;
+      background: #090d12;
+      border: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      line-height: 1.5;
+      overflow-x: auto;
+      color: #d2dce8;
+      white-space: pre;
+    }
+
+    .scope-note {
+      margin: 10px 0 0;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    .status-banner {
+      margin-bottom: 18px;
+      padding: 11px 15px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      font-family: var(--mono);
+      font-size: 0.83rem;
+      display: none;
+    }
+
+    .status-banner.visible { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+    .summary-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .stat-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+
+    .stat-label {
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    .stat-value {
+      font-size: 1.55rem;
+      font-weight: 700;
+      font-family: var(--mono);
+      margin-top: 4px;
+    }
+
+    .section-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .section-header h2 {
+      margin: 0;
+      font-size: 1.15rem;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86rem;
+    }
+
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    th {
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      background: rgba(21, 29, 39, 0.85);
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: rgba(88, 166, 255, 0.04); }
+
+    .num { text-align: right; font-family: var(--mono); }
+    .mono { font-family: var(--mono); }
+
+    .badge {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 0.73rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .badge-pass { background: var(--pass-bg); color: var(--pass); border: 1px solid rgba(63, 185, 80, 0.4); }
+    .badge-patched { background: var(--patched-bg); color: var(--patched); border: 1px solid rgba(210, 153, 34, 0.45); }
+    .badge-fail { background: var(--fail-bg); color: var(--fail); border: 1px solid rgba(248, 81, 73, 0.45); }
+    .badge-blocker { background: var(--blocker); color: #ffffff; }
+    .badge-critical { background: var(--fail-bg); color: var(--critical); border: 1px solid rgba(248, 81, 73, 0.45); }
+    .badge-warning { background: var(--patched-bg); color: var(--warning); border: 1px solid rgba(210, 153, 34, 0.45); }
+    .badge-info { background: var(--accent-soft); color: var(--info); border: 1px solid rgba(121, 192, 255, 0.35); }
+
+    .jar-details-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    details.jar-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    details.jar-card > summary {
+      padding: 15px 18px;
+      cursor: pointer;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      list-style: none;
+      background: var(--panel);
+      font-weight: 600;
+    }
+
+    details.jar-card > summary::-webkit-details-marker { display: none; }
+    details.jar-card > summary:hover { background: var(--panel-hover); }
+
+    .jar-card-body {
+      padding: 16px 18px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-elevated);
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+      font-size: 0.83rem;
+    }
+
+    .meta-item {
+      padding: 8px 11px;
+      border-radius: 6px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+    }
+
+    .meta-key {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.74rem;
+      display: block;
+    }
+
+    .notes-list {
+      margin: 0 0 14px;
+      padding: 10px 14px 10px 28px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: rgba(88, 166, 255, 0.06);
+      color: #c6d4e5;
+      font-size: 0.83rem;
+    }
+
+    .notes-list li { margin: 4px 0; }
+
+    .class-group {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-top: 10px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .class-group > summary {
+      padding: 10px 14px;
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 0.83rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      list-style: none;
+    }
+
+    .class-group > summary::-webkit-details-marker { display: none; }
+    .class-group > summary:hover { background: var(--panel-hover); }
+
+    .finding-item {
+      padding: 12px 14px;
+      border-top: 1px solid var(--border);
+      background: #0e141c;
+      font-size: 0.85rem;
+    }
+
+    .finding-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .finding-evidence {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: var(--info);
+      background: rgba(121, 192, 255, 0.08);
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+
+    .finding-detail {
+      color: var(--muted);
+      margin: 4px 0;
+      font-size: 0.82rem;
+    }
+
+    .finding-detail strong { color: var(--fg); }
+
+    .rules-ref {
+      margin-top: 28px;
+    }
+
+    .footer {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.83rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span>FoliaScan</span>
+        <span class="brand-tag">v0.2.1 Browser Bytecode Scanner</span>
+      </div>
+      <nav class="nav-links" aria-label="Primary links">
+        <a href="https://github.com/SalyyS1/foliascan">GitHub Repository</a>
+        <a href="https://github.com/SalyyS1/foliascan/releases">CLI Releases</a>
+        <a href="#rules-catalog">Rule Catalog</a>
+        <a href="https://salyys1.github.io/minecraftkit/">MinecraftKit Explorer</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <div class="hero-card">
+        <h1>Client-Side Folia Plugin JAR Scanner</h1>
+        <p class="subtitle">
+          Drop one plugin <code>.jar</code> or an entire server <code>plugins/</code> folder.
+          ZIP Central Directory headers, <code>plugin.yml</code> / <code>paper-plugin.yml</code>, and
+          <code>0xCAFEBABE</code> JVM class constant pools are unpacked locally in browser memory.
+        </p>
+        <div class="privacy-pill">
+          100% local ArrayBuffer + DecompressionStream analysis. Zero network uploads, zero external CDNs.
+        </div>
+
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Drop Minecraft plugin JAR files here or click to browse">
+          <p class="dropzone-title">Drop plugin <code>.jar</code> file(s) here</p>
+          <p class="dropzone-hint">Supports multiple JARs at once to build a full Server Compatibility Matrix</p>
+          <div class="btn-row">
+            <button type="button" id="browseBtn" class="btn-primary">Select .jar File(s)</button>
+            <button type="button" id="sampleLegacyBtn">Load Sample Legacy Plugin (.jar)</button>
+            <button type="button" id="sampleMatrixBtn">Load 3-JAR Server Matrix Demo</button>
+          </div>
+          <input type="file" id="fileInput" accept=".jar,application/java-archive" multiple class="hidden">
+        </div>
+
+        <div class="controls-bar">
+          <label class="checkbox-label">
+            <input type="checkbox" id="scanShadedToggle">
+            <span>Scan shaded dependencies (include HikariCP, bStats, Kyori, Kotlin, Guava, Netty, etc.)</span>
+          </label>
+          <div class="btn-row">
+            <button type="button" id="clearBtn" class="hidden">Clear Results</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="side-card">
+        <h2>Gate Releases in GitHub Actions</h2>
+        <p class="scope-note">
+          Run the full CLI analyzer (with intra-jar call-graph async taint propagation, Folia guard resolution,
+          and SARIF code-scanning alerts) in 3 lines:
+        </p>
+        <pre class="code-snippet">- uses: SalyyS1/foliascan@main
+  with:
+    jar: build/libs/*.jar
+    fail-on: critical
+    sarif-file: foliascan.sarif</pre>
+        <p class="scope-note">
+          <strong>Browser vs CLI scope:</strong> This browser scanner checks descriptors (<code>FS001</code>),
+          bytecode patcher markers (<code>FS002</code>), unconditional Folia crashes (<code>FS010</code>-<code>FS041</code>),
+          NMS internals (<code>FS070</code>), and thread checks (<code>FS080</code>) directly from JVM constant pools,
+          and flags classes containing contextual async + region-guarded calls for deep CLI call-graph verification.
+        </p>
+      </aside>
+    </section>
+
+    <div id="statusBanner" class="status-banner" role="status" aria-live="polite"></div>
+
+    <section id="resultsSection" class="hidden">
+      <div id="summaryStats" class="summary-stats"></div>
+
+      <div class="panel">
+        <div class="section-header">
+          <h2>Server Compatibility Matrix</h2>
+          <div class="btn-row">
+            <button type="button" id="copyMdBtn">Copy Markdown</button>
+            <button type="button" id="downloadMdBtn">Download .md</button>
+            <button type="button" id="downloadJsonBtn">Export .json</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Verdict</th>
+                <th>Artifact</th>
+                <th>Plugin</th>
+                <th>Descriptor</th>
+                <th>folia-supported</th>
+                <th class="num">Classes</th>
+                <th class="num">Blocker</th>
+                <th class="num">Critical</th>
+                <th class="num">Warning</th>
+                <th class="num">Info</th>
+              </tr>
+            </thead>
+            <tbody id="matrixBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="jarDetailsList" class="jar-details-list"></div>
+    </section>
+
+    <section id="rules-catalog" class="panel rules-ref">
+      <div class="section-header">
+        <h2>Core Folia Rule Catalog Verified in Browser</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Severity</th>
+              <th>Detection Target</th>
+              <th>Folia Patch Provenance</th>
+            </tr>
+          </thead>
+          <tbody id="rulesRefBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div>
+        FoliaScan by <a href="https://github.com/SalyyS1">SalyVn / Salyyy</a>. Apache-2.0 License.
+        Independent static analyzer; not affiliated with PaperMC or Mojang.
+      </div>
+      <div>
+        Companion Toolchain:
+        <a href="https://github.com/SalyyS1/minecraftkit">minecraftkit</a> |
+        <a href="https://github.com/SalyyS1/serverdoctor">serverdoctor</a> |
+        <a href="https://github.com/SalyyS1/pluginscope">pluginscope</a> |
+        <a href="https://github.com/SalyyS1/mcstage">mcstage</a> |
+        <a href="https://github.com/SalyyS1/glyphsmith">glyphsmith</a>
+      </div>
+    </footer>
+  </main>
+
+  <script>
+  (() => {
+    "use strict";
+
+    // =========================================================================
+    // 1. Rule Catalog & Vendor Package Definitions
+    // =========================================================================
+
+    const SEVERITY_RANK = { BLOCKER: 4, CRITICAL: 3, WARNING: 2, INFO: 1 };
+
+    const RULES = {
+      FS001: {
+        id: "FS001",
+        severity: "BLOCKER",
+        title: "Plugin does not declare folia-supported: true",
+        why: "Folia refuses to load any plugin whose descriptor lacks folia-supported: true, so the plugin never starts.",
+        fix: "Add folia-supported: true to paper-plugin.yml or plugin.yml only after migrating legacy schedulers and region-unsafe calls.",
+        provenance: "0003-Require-plugins-to-be-explicitly-marked-as-Folia-sup.patch (PluginDescriptionFile#isFoliaSupported)"
+      },
+      FS002: {
+        id: "FS002",
+        severity: "WARNING",
+        title: "Folia support was declared by a bytecode patcher, not by the author",
+        why: "Runtime classes injected by an automated Folia patcher (FoliaPhantom / pasta) are present. Patchers write folia-supported: true unconditionally without proving region safety.",
+        fix: "Treat the declared flag as unproven. Test under real regional load or request native support from the plugin author.",
+        provenance: "MARVserver/pasta PluginPatcher#modifyPluginDescriptor + RUNTIME_CLASSES"
+      },
+      FS010: {
+        id: "FS010",
+        severity: "CRITICAL",
+        title: "Legacy BukkitScheduler getter (Bukkit.getScheduler / Server#getScheduler)",
+        why: "Folia replaces CraftScheduler#handle with an unconditional UnsupportedOperationException, so every legacy runTask* and async variant fails at runtime.",
+        fix: "Use Bukkit.getGlobalRegionScheduler(), Bukkit.getRegionScheduler(), entity.getScheduler(), or Bukkit.getAsyncScheduler().",
+        provenance: "0001-Region-Threading-Base.patch (CraftScheduler#handle)"
+      },
+      FS011: {
+        id: "FS011",
+        severity: "CRITICAL",
+        title: "Call on BukkitScheduler throws unconditionally on Folia",
+        why: "Every BukkitScheduler task submission routes through CraftScheduler#handle, which throws UnsupportedOperationException on Folia.",
+        fix: "Replace BukkitScheduler fields and calls with Paper's threaded-region schedulers.",
+        provenance: "0001-Region-Threading-Base.patch (CraftScheduler#handle)"
+      },
+      FS012: {
+        id: "FS012",
+        severity: "CRITICAL",
+        title: "Class extends BukkitRunnable",
+        why: "Every BukkitRunnable#runTask* submission routes through CraftScheduler#handle and throws unconditionally on Folia.",
+        fix: "Replace BukkitRunnable subclasses with plain lambdas or Consumer<ScheduledTask> scheduled on RegionScheduler, EntityScheduler, GlobalRegionScheduler, or AsyncScheduler.",
+        provenance: "0002-Region-scheduler-API.patch (BukkitScheduler @Deprecated)"
+      },
+      FS020: {
+        id: "FS020",
+        severity: "CRITICAL",
+        title: "Synchronous Entity#teleport rejected under region threading",
+        why: "CraftEntity#teleport0 and CraftPlayer#teleport0 throw UnsupportedOperationException('Must use teleportAsync while in region threading') because teleports cross region boundaries.",
+        fix: "Use entity.teleportAsync(location) and chain logic onto the returned CompletableFuture<Boolean>.",
+        provenance: "0001-Region-Threading-Base.patch (CraftEntity#teleport0, CraftPlayer#teleport0)"
+      },
+      FS030: {
+        id: "FS030",
+        severity: "CRITICAL",
+        title: "Scoreboard objective/team/slot registration is not implemented on Folia",
+        why: "CraftScoreboard#registerNewObjective, #registerNewTeam, and #clearSlot throw UnsupportedOperationException unconditionally on Folia.",
+        fix: "Render sidebars/HUDs with packet-level sidebars, boss bars, action bars, or text displays, or gate scoreboard features off on Folia.",
+        provenance: "0001-Region-Threading-Base.patch (CraftScoreboard#registerNewObjective, #registerNewTeam, #clearSlot)"
+      },
+      FS031: {
+        id: "FS031",
+        severity: "CRITICAL",
+        title: "Scoreboard creation and assignment are not implemented on Folia",
+        why: "CraftScoreboardManager#getNewScoreboard and Player#setScoreboard throw unconditionally on Folia.",
+        fix: "Disable Bukkit Scoreboard assignment on Folia or switch to packet-based displays.",
+        provenance: "0001-Region-Threading-Base.patch (CraftScoreboardManager#getNewScoreboard, #setPlayerBoard)"
+      },
+      FS040: {
+        id: "FS040",
+        severity: "CRITICAL",
+        title: "Runtime createWorld / unloadWorld is not implemented on Folia",
+        why: "CraftServer#createWorld and #unloadWorld throw UnsupportedOperationException on Folia.",
+        fix: "Pre-create worlds prior to server startup or disable runtime world management when running on Folia.",
+        provenance: "0001-Region-Threading-Base.patch (CraftServer#createWorld, #unloadWorld)"
+      },
+      FS041: {
+        id: "FS041",
+        severity: "CRITICAL",
+        title: "World#getTickableTileEntityCount throws unconditionally on Folia",
+        why: "CraftWorld#getTickableTileEntityCount throws UnsupportedOperationException on Folia.",
+        fix: "Remove the metric or track tile-entity counts per region explicitly.",
+        provenance: "0001-Region-Threading-Base.patch (CraftWorld#getTickableTileEntityCount)"
+      },
+      FS070: {
+        id: "FS070",
+        severity: "WARNING",
+        title: "Direct net.minecraft / org.bukkit.craftbukkit internals access",
+        why: "Folia rewrites the tick loop, chunk holder pipeline, and entity storage; NMS and CraftBukkit internals enforce TickThread ownership checks.",
+        fix: "Prefer public Paper APIs, or isolate NMS access behind a region-verified version adapter.",
+        provenance: "0001-Region-Threading-Base.patch (server internals rewrite)"
+      },
+      FS080: {
+        id: "FS080",
+        severity: "INFO",
+        title: "Bukkit.isPrimaryThread() / Server#isPrimaryThread() used as a thread gate",
+        why: "Folia has no single main tick thread. Branching on isPrimaryThread() does not prove ownership of a chunk or entity.",
+        fix: "Use Bukkit.isOwnedByCurrentRegion(location/entity), Bukkit.isGlobalTickThread(), or schedule directly onto the owning scheduler.",
+        provenance: "0001-Region-Threading-Base.patch (removal of isPrimaryThread guards)"
+      }
+    };
+
+    const PATCHER_MARKERS = [
+      "com/patch/foliaphantom/patcher/FoliaPatcher.class",
+      "com/patch/foliaphantom/patcher/FoliaPatcher$TaskSchedulerFactory.class",
+      "com/patch/foliaphantom/patcher/FoliaPatcher$ScheduledTaskStub.class"
+    ];
+
+    const TOP_LEVEL_VENDOR_PREFIXES = [
+      "META-INF/",
+      "com/zaxxer/hikari/",
+      "org/bstats/",
+      "net/kyori/",
+      "kotlin/",
+      "kotlinx/",
+      "com/google/",
+      "io/netty/",
+      "org/slf4j/",
+      "org/apache/",
+      "org/yaml/snakeyaml/",
+      "com/fasterxml/jackson/",
+      "org/jetbrains/",
+      "org/intellij/",
+      "com/github/benmanes/caffeine/",
+      "org/mariadb/",
+      "com/mysql/",
+      "org/sqlite/",
+      "org/postgresql/",
+      "redis/clients/",
+      "io/lettuce/",
+      "okhttp3/",
+      "okio/",
+      "retrofit2/",
+      "org/jooq/",
+      "org/flywaydb/",
+      "de/tr7zw/changeme/nbtapi/",
+      "com/tcoded/folialib/",
+      "co/aikar/",
+      "org/incendo/",
+      "dev/triumphteam/",
+      "fr/mrmicky/",
+      "org/objectweb/asm/",
+      "net/bytebuddy/"
+    ];
+
+    const BUILD_SEGMENTS = new Set([
+      "libs", "lib", "shaded", "shadow", "shadowed", "thirdparty", "third_party",
+      "dependencies", "vendor", "vendored", "relocated", "repackaged", "bundled", "bundledlibraries"
+    ]);
+
+    const KNOWN_LIBRARIES = new Set([
+      "kyori", "adventure", "configurate", "gson", "jackson", "snakeyaml", "toml4j",
+      "geantyref", "typesafe", "hocon", "acf", "aikar", "cloud", "incendo", "slate",
+      "triumph", "inventoryframework", "smartinvs", "fastinv", "guilib", "hikari",
+      "zaxxer", "jooq", "flyway", "evalex", "exp4j", "nbtapi", "tr7zw", "querz",
+      "guava", "commons", "apache", "okhttp", "okio", "retrofit", "netty", "caffeine",
+      "reflections", "asm", "bytebuddy", "jetbrains", "intellij", "objenesis", "bstats",
+      "papi", "placeholderapi", "protocollib", "packetevents", "folialib", "foliascheduler", "foliacompat"
+    ]);
+
+    const ADAPTER_SEGMENTS = new Set([
+      "comp", "compat", "compatibility", "hook", "hooks", "integration", "integrations",
+      "bridge", "support", "adapter", "adapters", "impl"
+    ]);
+
+    const CONTEXTUAL_WORLD_METHODS = new Set([
+      "createExplosion", "generateTree", "getChunkAt", "getGameTime", "getHighestBlockYAt",
+      "isChunkGenerated", "loadChunk", "refreshChunk", "sendGameEvent", "setBiome",
+      "unloadChunk", "unloadChunkRequest", "getForceLoadedChunks", "getMetadata",
+      "hasMetadata", "isChunkForceLoaded", "removeMetadata", "setChunkForceLoaded",
+      "setClearWeatherDuration", "setFullTime", "setGameRule", "setGameRuleValue",
+      "setHardcore", "setMetadata", "setSpawnLimit", "setStorm", "setThunderDuration",
+      "setThundering", "setTicksPerSpawns", "setTime", "setWeatherDuration"
+    ]);
+
+    const CONTEXTUAL_BLOCK_METHODS = new Set([
+      "applyBoneMeal", "breakNaturally", "canPlace", "fluidTick", "getBiome", "getBlockData",
+      "getBlockPower", "getBlockState", "getComputedBiome", "getDrops", "getState", "getType",
+      "isBlockFaceIndirectlyPowered", "isEmpty", "isLiquid", "isPassable", "randomTick",
+      "rayTrace", "setBiome", "setBlockData", "setBlockState", "setType", "tick"
+    ]);
+
+    const ASYNC_SUBMITTERS = new Set([
+      "runTaskAsynchronously", "runTaskLaterAsynchronously", "runTaskTimerAsynchronously",
+      "supplyAsync", "runAsync", "thenRunAsync", "thenApplyAsync", "thenAcceptAsync",
+      "thenComposeAsync", "submit", "execute"
+    ]);
+
+    const ASYNC_EVENT_DESCRIPTORS = [
+      "org/bukkit/event/player/AsyncPlayerChatEvent",
+      "org/bukkit/event/player/AsyncPlayerPreLoginEvent",
+      "io/papermc/paper/event/player/AsyncChatEvent",
+      "io/papermc/paper/event/player/AsyncChatDecorateEvent"
+    ];
+
+    // =========================================================================
+    // 2. Native Browser ZIP Central Directory & Deflate-Raw Unpacker
+    // =========================================================================
+
+    const UTF8_DECODER = new TextDecoder("utf-8");
+
+    function parseZipIndex(arrayBuffer) {
+      const view = new DataView(arrayBuffer);
+      const byteLength = arrayBuffer.byteLength;
+      if (byteLength < 22) {
+        throw new Error("File is smaller than a minimal 22-byte ZIP archive.");
+      }
+
+      let eocdPos = -1;
+      const minEocd = Math.max(0, byteLength - 65557);
+      for (let pos = byteLength - 22; pos >= minEocd; pos--) {
+        if (view.getUint32(pos, true) === 0x06054b50) {
+          const commentLen = view.getUint16(pos + 20, true);
+          if (pos + 22 + commentLen <= byteLength) {
+            eocdPos = pos;
+            break;
+          }
+        }
+      }
+
+      const entries = [];
+      if (eocdPos !== -1) {
+        const totalEntries = view.getUint16(eocdPos + 10, true);
+        const cdSize = view.getUint32(eocdPos + 12, true);
+        const cdOffset = view.getUint32(eocdPos + 16, true);
+        if (cdOffset + cdSize > byteLength) {
+          throw new Error("Corrupt ZIP Central Directory bounds.");
+        }
+        let ptr = cdOffset;
+        for (let i = 0; i < totalEntries && ptr + 46 <= cdOffset + cdSize; i++) {
+          if (view.getUint32(ptr, true) !== 0x02014b50) {
+            throw new Error("Invalid Central Directory header magic.");
+          }
+          const compressionMethod = view.getUint16(ptr + 10, true);
+          const compressedSize = view.getUint32(ptr + 20, true);
+          const uncompressedSize = view.getUint32(ptr + 24, true);
+          const nameLen = view.getUint16(ptr + 28, true);
+          const extraLen = view.getUint16(ptr + 30, true);
+          const commentLen = view.getUint16(ptr + 32, true);
+          const localHeaderOffset = view.getUint32(ptr + 42, true);
+
+          const nameBytes = new Uint8Array(arrayBuffer, ptr + 46, nameLen);
+          const name = UTF8_DECODER.decode(nameBytes);
+          ptr += 46 + nameLen + extraLen + commentLen;
+
+          if (name.endsWith("/")) continue;
+          if (localHeaderOffset + 30 > byteLength || view.getUint32(localHeaderOffset, true) !== 0x04034b50) {
+            throw new Error("Invalid Local File Header for entry: " + name);
+          }
+          const lfhNameLen = view.getUint16(localHeaderOffset + 26, true);
+          const lfhExtraLen = view.getUint16(localHeaderOffset + 28, true);
+          const dataOffset = localHeaderOffset + 30 + lfhNameLen + lfhExtraLen;
+          if (dataOffset + compressedSize > byteLength) {
+            throw new Error("Truncated compressed payload for entry: " + name);
+          }
+          entries.push({
+            name,
+            compressionMethod,
+            compressedSize,
+            uncompressedSize,
+            dataOffset
+          });
+        }
+        return entries;
+      }
+
+      // Fallback sequential Local File Header walk for header-only streams without EOCD
+      let offset = 0;
+      while (offset + 30 <= byteLength && view.getUint32(offset, true) === 0x04034b50) {
+        const flags = view.getUint16(offset + 6, true);
+        if ((flags & 0x08) !== 0) {
+          throw new Error("Streaming ZIP archive lacks an End of Central Directory record.");
+        }
+        const compressionMethod = view.getUint16(offset + 8, true);
+        const compressedSize = view.getUint32(offset + 18, true);
+        const uncompressedSize = view.getUint32(offset + 22, true);
+        const nameLen = view.getUint16(offset + 26, true);
+        const extraLen = view.getUint16(offset + 28, true);
+        const name = UTF8_DECODER.decode(new Uint8Array(arrayBuffer, offset + 30, nameLen));
+        const dataOffset = offset + 30 + nameLen + extraLen;
+        if (dataOffset + compressedSize > byteLength) break;
+        if (!name.endsWith("/")) {
+          entries.push({ name, compressionMethod, compressedSize, uncompressedSize, dataOffset });
+        }
+        offset = dataOffset + compressedSize;
+      }
+      if (entries.length === 0) {
+        throw new Error("Not a valid .jar / ZIP archive.");
+      }
+      return entries;
+    }
+
+    async function inflateRawBytes(compressedBytes, maxBytes = 32 * 1024 * 1024) {
+      if (typeof DecompressionStream === "undefined") {
+        throw new Error("This browser lacks native DecompressionStream('deflate-raw') support.");
+      }
+      const ds = new DecompressionStream("deflate-raw");
+      const writer = ds.writable.getWriter();
+      writer.write(compressedBytes).catch(() => {});
+      writer.close().catch(() => {});
+
+      const reader = ds.readable.getReader();
+      const chunks = [];
+      let total = 0;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel();
+          throw new Error("Entry exceeds 32 MiB decompression safety cap.");
+        }
+        chunks.push(value);
+      }
+      const out = new Uint8Array(total);
+      let pos = 0;
+      for (const chunk of chunks) {
+        out.set(chunk, pos);
+        pos += chunk.byteLength;
+      }
+      return out;
+    }
+
+    async function extractEntryBytes(arrayBuffer, entry) {
+      const slice = new Uint8Array(arrayBuffer, entry.dataOffset, entry.compressedSize);
+      if (entry.compressionMethod === 0) {
+        return slice;
+      }
+      if (entry.compressionMethod === 8) {
+        return await inflateRawBytes(slice);
+      }
+      throw new Error("Unsupported ZIP compression method " + entry.compressionMethod + " in " + entry.name);
+    }
+
+    // =========================================================================
+    // 3. Plugin YAML Descriptor Parser (paper-plugin.yml / plugin.yml)
+    // =========================================================================
+
+    function stripYamlScalar(raw) {
+      let s = raw.trim();
+      if (!s) return "";
+      if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+        return s.slice(1, -1).trim();
+      }
+      let inSingle = false;
+      let inDouble = false;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === "'" && !inDouble) inSingle = !inSingle;
+        else if (ch === '"' && !inSingle) inDouble = !inDouble;
+        else if (ch === "#" && !inSingle && !inDouble && (i === 0 || /\s/.test(s[i - 1]))) {
+          s = s.slice(0, i).trim();
+          break;
+        }
+      }
+      return s;
+    }
+
+    function parsePluginDescriptor(yamlText, sourceFile) {
+      const clean = yamlText.replace(/^\uFEFF/, "");
+      const lines = clean.split(/\r?\n/);
+      const map = Object.create(null);
+      for (const line of lines) {
+        if (!line || /^\s/.test(line)) continue;
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const colonIdx = trimmed.indexOf(":");
+        if (colonIdx <= 0) continue;
+        const key = trimmed.slice(0, colonIdx).trim();
+        const val = stripYamlScalar(trimmed.slice(colonIdx + 1));
+        if (!(key in map)) {
+          map[key] = val;
+        }
+      }
+      const foliaRaw = (map["folia-supported"] || "").toLowerCase();
+      return {
+        source: sourceFile,
+        name: map["name"] || null,
+        version: map["version"] || null,
+        main: map["main"] || null,
+        apiVersion: map["api-version"] || null,
+        foliaSupported: foliaRaw === "true"
+      };
+    }
+
+    // =========================================================================
+    // 4. 0xCAFEBABE JVM .class Constant Pool & Header Parser
+    // =========================================================================
+
+    function decodeModifiedUtf8(bytes, start, length) {
+      const end = start + length;
+      let out = "";
+      let i = start;
+      while (i < end) {
+        const c = bytes[i];
+        if (c >= 0x01 && c <= 0x7f) {
+          out += String.fromCharCode(c);
+          i += 1;
+        } else if ((c & 0xe0) === 0xc0 && i + 1 < end) {
+          const c2 = bytes[i + 1];
+          const code = ((c & 0x1f) << 6) | (c2 & 0x3f);
+          out += String.fromCharCode(code);
+          i += 2;
+        } else if ((c & 0xf0) === 0xe0 && i + 2 < end) {
+          const c2 = bytes[i + 1];
+          const c3 = bytes[i + 2];
+          const code = ((c & 0x0f) << 12) | ((c2 & 0x3f) << 6) | (c3 & 0x3f);
+          out += String.fromCharCode(code);
+          i += 3;
+        } else {
+          out += String.fromCharCode(c);
+          i += 1;
+        }
+      }
+      return out;
+    }
+
+    function parseClassBytes(bytes) {
+      if (bytes.byteLength < 10) return null;
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      if (view.getUint32(0, false) !== 0xcafebabe) return null;
+
+      const minorVersion = view.getUint16(4, false);
+      const majorVersion = view.getUint16(6, false);
+      const cpCount = view.getUint16(8, false);
+
+      const cp = new Array(cpCount);
+      let pos = 10;
+
+      for (let idx = 1; idx < cpCount; idx++) {
+        if (pos >= bytes.byteLength) return null;
+        const tag = bytes[pos];
+        pos += 1;
+        switch (tag) {
+          case 1: { // CONSTANT_Utf8
+            const len = view.getUint16(pos, false);
+            pos += 2;
+            if (pos + len > bytes.byteLength) return null;
+            cp[idx] = { tag: 1, value: decodeModifiedUtf8(bytes, pos, len) };
+            pos += len;
+            break;
+          }
+          case 3: // Integer
+          case 4: // Float
+          case 17: // Dynamic
+          case 18: { // InvokeDynamic
+            pos += 4;
+            cp[idx] = { tag };
+            break;
+          }
+          case 5: // Long (2 slots)
+          case 6: { // Double (2 slots)
+            pos += 8;
+            cp[idx] = { tag };
+            idx += 1;
+            break;
+          }
+          case 7: { // Class
+            cp[idx] = { tag: 7, nameIndex: view.getUint16(pos, false) };
+            pos += 2;
+            break;
+          }
+          case 8: // String
+          case 16: // MethodType
+          case 19: // Module
+          case 20: { // Package
+            cp[idx] = { tag, index: view.getUint16(pos, false) };
+            pos += 2;
+            break;
+          }
+          case 9: // Fieldref
+          case 10: // Methodref
+          case 11: { // InterfaceMethodref
+            cp[idx] = {
+              tag,
+              classIndex: view.getUint16(pos, false),
+              nameAndTypeIndex: view.getUint16(pos + 2, false)
+            };
+            pos += 4;
+            break;
+          }
+          case 12: { // NameAndType
+            cp[idx] = {
+              tag: 12,
+              nameIndex: view.getUint16(pos, false),
+              descriptorIndex: view.getUint16(pos + 2, false)
+            };
+            pos += 4;
+            break;
+          }
+          case 15: { // MethodHandle
+            pos += 3;
+            cp[idx] = { tag: 15 };
+            break;
+          }
+          default:
+            return null;
+        }
+      }
+
+      const utf8At = (index) => {
+        const entry = cp[index];
+        return entry && entry.tag === 1 ? entry.value : null;
+      };
+      const classAt = (index) => {
+        if (!index) return null;
+        const entry = cp[index];
+        return entry && entry.tag === 7 ? utf8At(entry.nameIndex) : null;
+      };
+
+      if (pos + 8 > bytes.byteLength) return null;
+      const accessFlags = view.getUint16(pos, false);
+      const thisClass = classAt(view.getUint16(pos + 2, false));
+      const superClass = classAt(view.getUint16(pos + 4, false));
+      const interfacesCount = view.getUint16(pos + 6, false);
+      pos += 8;
+
+      if (!thisClass || pos + interfacesCount * 2 > bytes.byteLength) return null;
+      const interfaces = [];
+      for (let i = 0; i < interfacesCount; i++) {
+        const iface = classAt(view.getUint16(pos, false));
+        if (iface) interfaces.push(iface);
+        pos += 2;
+      }
+
+      const declaredMethods = [];
+      let sourceFile = null;
+
+      // Walk fields, methods, and class attributes to capture method signatures and SourceFile
+      if (pos + 2 <= bytes.byteLength) {
+        const fieldsCount = view.getUint16(pos, false);
+        pos += 2;
+        for (let f = 0; f < fieldsCount && pos + 8 <= bytes.byteLength; f++) {
+          const attrCount = view.getUint16(pos + 6, false);
+          pos += 8;
+          for (let a = 0; a < attrCount && pos + 6 <= bytes.byteLength; a++) {
+            const attrLen = view.getUint32(pos + 2, false);
+            pos += 6 + attrLen;
+          }
+        }
+        if (pos + 2 <= bytes.byteLength) {
+          const methodsCount = view.getUint16(pos, false);
+          pos += 2;
+          for (let m = 0; m < methodsCount && pos + 8 <= bytes.byteLength; m++) {
+            const mName = utf8At(view.getUint16(pos + 2, false)) || "";
+            const mDesc = utf8At(view.getUint16(pos + 4, false)) || "";
+            const attrCount = view.getUint16(pos + 6, false);
+            declaredMethods.push({ name: mName, descriptor: mDesc });
+            pos += 8;
+            for (let a = 0; a < attrCount && pos + 6 <= bytes.byteLength; a++) {
+              const attrLen = view.getUint32(pos + 2, false);
+              pos += 6 + attrLen;
+            }
+          }
+          if (pos + 2 <= bytes.byteLength) {
+            const classAttrCount = view.getUint16(pos, false);
+            pos += 2;
+            for (let a = 0; a < classAttrCount && pos + 6 <= bytes.byteLength; a++) {
+              const attrName = utf8At(view.getUint16(pos, false));
+              const attrLen = view.getUint32(pos + 2, false);
+              if (attrName === "SourceFile" && attrLen === 2 && pos + 8 <= bytes.byteLength) {
+                sourceFile = utf8At(view.getUint16(pos + 6, false));
+              }
+              pos += 6 + attrLen;
+            }
+          }
+        }
+      }
+
+      const methodRefs = [];
+      const fieldRefs = [];
+      const classRefs = [];
+
+      for (let idx = 1; idx < cpCount; idx++) {
+        const item = cp[idx];
+        if (!item) continue;
+        if (item.tag === 7) {
+          const cname = utf8At(item.nameIndex);
+          if (cname) classRefs.push(cname);
+        } else if (item.tag === 10 || item.tag === 11) {
+          const owner = classAt(item.classIndex);
+          const nat = cp[item.nameAndTypeIndex];
+          if (owner && nat && nat.tag === 12) {
+            const name = utf8At(nat.nameIndex);
+            const descriptor = utf8At(nat.descriptorIndex);
+            if (name && descriptor) {
+              methodRefs.push({ owner, name, descriptor });
+            }
+          }
+        } else if (item.tag === 9) {
+          const owner = classAt(item.classIndex);
+          const nat = cp[item.nameAndTypeIndex];
+          if (owner && nat && nat.tag === 12) {
+            const name = utf8At(nat.nameIndex);
+            const descriptor = utf8At(nat.descriptorIndex);
+            if (name && descriptor) {
+              fieldRefs.push({ owner, name, descriptor });
+            }
+          }
+        }
+      }
+
+      return {
+        internalName: thisClass,
+        binaryName: thisClass.replace(/\//g, "."),
+        superClass,
+        interfaces,
+        majorVersion,
+        minorVersion,
+        accessFlags,
+        sourceFile,
+        declaredMethods,
+        methodRefs,
+        fieldRefs,
+        classRefs
+      };
+    }
+
+    // =========================================================================
+    // 5. Shaded Dependency Filter & Folia Rule Evaluator
+    // =========================================================================
+
+    function deriveOwnedRoots(descriptor, classEntryNames) {
+      if (!descriptor || !descriptor.main || !descriptor.main.includes(".")) {
+        return [];
+      }
+      const mainPkg = descriptor.main.slice(0, descriptor.main.lastIndexOf(".")).replace(/\./g, "/");
+      const mainSegs = mainPkg.split("/");
+      const nonMeta = classEntryNames
+        .filter((n) => !TOP_LEVEL_VENDOR_PREFIXES.some((p) => n.startsWith(p)))
+        .map((n) => n.replace(/\.class$/, "").split("/").slice(0, -1));
+      let widened = mainPkg;
+      if (nonMeta.length > 0) {
+        let shared = nonMeta[0];
+        for (let i = 1; i < nonMeta.length; i++) {
+          const next = nonMeta[i];
+          const common = [];
+          for (let k = 0; k < Math.min(shared.length, next.length); k++) {
+            if (shared[k] === next[k]) common.push(shared[k]);
+            else break;
+          }
+          shared = common;
+        }
+        const matched = [];
+        for (let k = 0; k < Math.min(shared.length, mainSegs.length); k++) {
+          if (shared[k] === mainSegs[k]) matched.push(shared[k]);
+          else break;
+        }
+        if (matched.length >= 2) widened = matched.join("/");
+      }
+
+      const roots = new Set([widened]);
+      const slug = (descriptor.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (slug.length >= 4 && !KNOWN_LIBRARIES.has(slug)) {
+        for (const segs of nonMeta) {
+          for (let depth = 2; depth <= Math.min(3, segs.length); depth++) {
+            const leaf = segs[depth - 1].toLowerCase().replace(/[^a-z0-9]/g, "");
+            if (leaf === slug) {
+              roots.add(segs.slice(0, depth).join("/"));
+              break;
+            }
+          }
+        }
+      }
+      return Array.from(roots);
+    }
+
+    function classifyVendorPackage(internalName, ownedRoots, hasDescriptor) {
+      for (const prefix of TOP_LEVEL_VENDOR_PREFIXES) {
+        if (internalName.startsWith(prefix)) {
+          return prefix.replace(/\/$/, "").replace(/\//g, ".");
+        }
+      }
+      if (!hasDescriptor) return null;
+
+      if (ownedRoots.length > 0 && !ownedRoots.some((r) => internalName === r || internalName.startsWith(r + "/"))) {
+        const segs = internalName.split("/").slice(0, -1);
+        return segs.slice(0, Math.min(3, segs.length)).join(".") || "(outside-plugin-root)";
+      }
+
+      const segments = internalName.split("/").slice(0, -1);
+      let ownedDepth = 0;
+      for (const r of ownedRoots) {
+        if (internalName.startsWith(r + "/")) {
+          const d = r.split("/").length;
+          if (d > ownedDepth) ownedDepth = d;
+        }
+      }
+      for (let i = ownedDepth; i < segments.length; i++) {
+        const seg = segments[i];
+        if (!BUILD_SEGMENTS.has(seg) && !KNOWN_LIBRARIES.has(seg)) continue;
+        if (i > ownedDepth && ADAPTER_SEGMENTS.has(segments[i - 1])) continue;
+        return segments.slice(0, i + 1).join(".");
+      }
+      return null;
+    }
+
+    function extendsBukkitRunnable(internalName, classMap) {
+      let cur = internalName;
+      const visited = new Set();
+      while (cur && !visited.has(cur)) {
+        visited.add(cur);
+        const model = classMap.get(cur);
+        if (!model) return false;
+        if (model.superClass === "org/bukkit/scheduler/BukkitRunnable") return true;
+        cur = model.superClass;
+      }
+      return false;
+    }
+
+    function isFoliaRegionCall(ref) {
+      if (ref.owner.startsWith("io/papermc/paper/threadedregions/scheduler/")) return true;
+      if (
+        ref.name === "getGlobalRegionScheduler" ||
+        ref.name === "getRegionScheduler" ||
+        ref.name === "getAsyncScheduler" ||
+        ref.name === "isGlobalTickThread" ||
+        ref.name === "isOwnedByCurrentRegion" ||
+        ref.name === "getRegionTPS"
+      ) {
+        return true;
+      }
+      if (ref.owner.startsWith("org/bukkit/entity/") && ref.name === "getScheduler") return true;
+      return false;
+    }
+
+    function detectClassFoliaGuard(model) {
+      let probe = null;
+      for (const f of model.fieldRefs) {
+        if (/folia/i.test(f.name)) { probe = f.name; break; }
+      }
+      if (!probe) {
+        for (const m of model.methodRefs) {
+          if (/folia/i.test(m.name)) { probe = m.name + "()"; break; }
+          if (m.name === "isBrandCompatible") { probe = "ServerBuildInfo.isBrandCompatible()"; break; }
+          if (m.name === "isGlobalTickThread" || m.name === "isOwnedByCurrentRegion") {
+            probe = m.name + "()";
+            break;
+          }
+        }
+      }
+      if (!probe) return null;
+      const hasRegionBranch = model.methodRefs.some(isFoliaRegionCall);
+      if (!hasRegionBranch) return null;
+      return "Guarded dual-platform class: references " + probe + " alongside Folia threaded-region scheduler API";
+    }
+
+    async function scanPreparedJar(prepared, scanShaded) {
+      const { fileName, byteSize, arrayBuffer, entries, descriptor, patcherMarker } = prepared;
+      const notes = [];
+      if (!descriptor) {
+        notes.push("No paper-plugin.yml or plugin.yml found; treating JAR as a shared library.");
+      }
+
+      const classEntries = entries.filter((e) => e.name.endsWith(".class") && !e.name.endsWith("module-info.class"));
+      const classEntryNames = classEntries.map((e) => e.name);
+      const ownedRoots = deriveOwnedRoots(descriptor, classEntryNames);
+
+      const skippedSubtrees = new Set();
+      let skippedVendorCount = 0;
+      const classMap = new Map();
+      let unreadableCount = 0;
+
+      for (const entry of classEntries) {
+        const rawInternal = entry.name.slice(0, -6);
+        const vendorSubtree = !scanShaded
+          ? classifyVendorPackage(rawInternal, ownedRoots, Boolean(descriptor))
+          : null;
+        if (vendorSubtree) {
+          skippedVendorCount += 1;
+          skippedSubtrees.add(vendorSubtree);
+          continue;
+        }
+        let model = prepared.parsedClassCache.get(entry.name);
+        if (model === undefined) {
+          try {
+            const bytes = await extractEntryBytes(arrayBuffer, entry);
+            model = parseClassBytes(bytes);
+          } catch {
+            model = null;
+          }
+          prepared.parsedClassCache.set(entry.name, model);
+        }
+        if (!model) {
+          unreadableCount += 1;
+          continue;
+        }
+        classMap.set(model.internalName, model);
+      }
+
+      if (ownedRoots.length > 0 && !scanShaded) {
+        notes.push(
+          "Focused on plugin root package(s): " +
+          ownedRoots.map((r) => r.replace(/\//g, ".")).join(", ") +
+          " (" + classMap.size + " of " + classEntries.length + " classes analysed)."
+        );
+      }
+      if (skippedVendorCount > 0) {
+        const sample = Array.from(skippedSubtrees).sort().slice(0, 8).join(", ");
+        const more = skippedSubtrees.size > 8 ? " (+" + (skippedSubtrees.size - 8) + " more)" : "";
+        notes.push(
+          skippedVendorCount + " shaded/external class(es) skipped: " + sample + more +
+          ". Enable 'Scan shaded dependencies' to include them."
+        );
+      }
+      if (unreadableCount > 0) {
+        notes.push(unreadableCount + " class entry(ies) could not be decoded and were skipped.");
+      }
+
+      const findings = [];
+      const addFinding = (rule, className, sourceFile, evidence, overrideSeverity, contextNote) => {
+        findings.push({
+          ruleId: rule.id,
+          severity: overrideSeverity || rule.severity,
+          title: rule.title,
+          evidence,
+          why: rule.why,
+          fix: rule.fix,
+          provenance: rule.provenance,
+          location: {
+            jar: fileName,
+            className,
+            sourceFile: sourceFile || null
+          },
+          context: contextNote || null
+        });
+      };
+
+      // FS001: Manifest folia-supported
+      if (descriptor && !descriptor.foliaSupported) {
+        addFinding(
+          RULES.FS001,
+          descriptor.source,
+          null,
+          descriptor.source + " does not set folia-supported: true"
+        );
+      }
+
+      // FS002: Automated patcher runtime marker
+      if (patcherMarker) {
+        addFinding(
+          RULES.FS002,
+          patcherMarker.replace(/\.class$/, "").replace(/\//g, "."),
+          null,
+          "FoliaPhantom (pasta) runtime marker present: " + patcherMarker
+        );
+      }
+
+      let foliaApiUsages = 0;
+      let asyncSignalClasses = 0;
+      let contextualRegionCallSites = 0;
+
+      for (const model of classMap.values()) {
+        const guardReason = detectClassFoliaGuard(model);
+        const seenInClass = new Set();
+        const emitOnce = (rule, evidence, allowGuardDowngrade = false) => {
+          const key = rule.id + "|" + evidence;
+          if (seenInClass.has(key)) return;
+          seenInClass.add(key);
+          const downgraded = allowGuardDowngrade && guardReason && rule.severity === "CRITICAL";
+          addFinding(
+            rule,
+            model.binaryName,
+            model.sourceFile,
+            evidence,
+            downgraded ? "INFO" : rule.severity,
+            downgraded ? guardReason : null
+          );
+        };
+
+        // FS012: extends BukkitRunnable
+        if (extendsBukkitRunnable(model.internalName, classMap)) {
+          emitOnce(RULES.FS012, "extends BukkitRunnable", true);
+        }
+
+        let classHasAsyncSignal = model.declaredMethods.some((m) =>
+          ASYNC_EVENT_DESCRIPTORS.some((ev) => m.descriptor === "(L" + ev + ";)V")
+        );
+        let classContextualCalls = 0;
+
+        for (const ref of model.methodRefs) {
+          if (isFoliaRegionCall(ref)) {
+            foliaApiUsages += 1;
+          }
+
+          const simpleOwner = ref.owner.slice(ref.owner.lastIndexOf("/") + 1);
+
+          // Async / off-region entry signals
+          if (
+            ASYNC_SUBMITTERS.has(ref.name) ||
+            (ref.owner === "java/lang/Thread" && ref.name === "<init>") ||
+            ref.owner.endsWith("/AsyncScheduler") ||
+            ref.owner.endsWith("/GlobalRegionScheduler")
+          ) {
+            classHasAsyncSignal = true;
+          }
+
+          // Contextual region-guarded calls (FS050..FS064 territory)
+          if (
+            ((ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") &&
+              (ref.name === "getTPS" || ref.name === "getAverageTickTime" || ref.name === "dispatchCommand")) ||
+            (ref.owner === "org/bukkit/World" && CONTEXTUAL_WORLD_METHODS.has(ref.name)) ||
+            (ref.owner === "org/bukkit/block/Block" && CONTEXTUAL_BLOCK_METHODS.has(ref.name)) ||
+            (ref.owner === "org/bukkit/block/BlockState" &&
+              (ref.name === "update" || ref.name === "getDrops" || ref.name === "randomTick")) ||
+            (ref.owner.startsWith("org/bukkit/entity/") &&
+              ref.name !== "getScheduler" &&
+              ref.name !== "teleportAsync" &&
+              ref.name !== "teleport")
+          ) {
+            classContextualCalls += 1;
+          }
+
+          // FS010: Bukkit.getScheduler / Server#getScheduler
+          if ((ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") && ref.name === "getScheduler") {
+            emitOnce(RULES.FS010, simpleOwner + ".getScheduler()", true);
+          }
+
+          // FS011: any call on BukkitScheduler
+          if (ref.owner === "org/bukkit/scheduler/BukkitScheduler") {
+            emitOnce(RULES.FS011, "BukkitScheduler." + ref.name + "()", true);
+          }
+
+          // FS020: Entity#teleport
+          if (ref.owner.startsWith("org/bukkit/entity/") && ref.name === "teleport") {
+            emitOnce(RULES.FS020, simpleOwner + ".teleport()", true);
+          }
+
+          // FS030: Scoreboard#registerNewObjective / registerNewTeam / clearSlot
+          if (
+            ref.owner === "org/bukkit/scoreboard/Scoreboard" &&
+            (ref.name === "registerNewObjective" || ref.name === "registerNewTeam" || ref.name === "clearSlot")
+          ) {
+            emitOnce(RULES.FS030, "Scoreboard." + ref.name + "()", true);
+          }
+
+          // FS031: ScoreboardManager#getNewScoreboard, Player#setScoreboard
+          if (
+            (ref.owner === "org/bukkit/scoreboard/ScoreboardManager" && ref.name === "getNewScoreboard") ||
+            (ref.owner === "org/bukkit/entity/Player" && ref.name === "setScoreboard")
+          ) {
+            emitOnce(RULES.FS031, simpleOwner + "." + ref.name + "()", true);
+          }
+
+          // FS040: createWorld / unloadWorld
+          if (
+            (ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") &&
+            (ref.name === "createWorld" || ref.name === "unloadWorld")
+          ) {
+            emitOnce(RULES.FS040, simpleOwner + "." + ref.name + "()", true);
+          }
+
+          // FS041: World#getTickableTileEntityCount
+          if (ref.owner === "org/bukkit/World" && ref.name === "getTickableTileEntityCount") {
+            emitOnce(RULES.FS041, "World.getTickableTileEntityCount()", true);
+          }
+
+          // FS080: isPrimaryThread
+          if ((ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") && ref.name === "isPrimaryThread") {
+            emitOnce(RULES.FS080, simpleOwner + ".isPrimaryThread()", false);
+          }
+        }
+
+        if (classHasAsyncSignal) {
+          asyncSignalClasses += 1;
+          contextualRegionCallSites += classContextualCalls;
+        }
+
+        // FS070: NMS / CraftBukkit internals (one finding per class, matching FoliaScan CLI)
+        const internalTypes = new Set();
+        for (const cname of model.classRefs) {
+          if (cname.startsWith("net/minecraft/") || cname.startsWith("org/bukkit/craftbukkit/")) {
+            internalTypes.add(cname.replace(/\//g, "."));
+          }
+        }
+        for (const ref of model.methodRefs) {
+          if (ref.owner.startsWith("net/minecraft/") || ref.owner.startsWith("org/bukkit/craftbukkit/")) {
+            internalTypes.add(ref.owner.replace(/\//g, "."));
+          }
+        }
+        for (const f of model.fieldRefs) {
+          if (f.owner.startsWith("net/minecraft/") || f.owner.startsWith("org/bukkit/craftbukkit/")) {
+            internalTypes.add(f.owner.replace(/\//g, "."));
+          }
+        }
+        if (internalTypes.size > 0) {
+          const allInternal = Array.from(internalTypes);
+          const sample = allInternal.slice(0, 3).join(", ");
+          const more = allInternal.length > 3 ? ", +" + (allInternal.length - 3) + " more" : "";
+          addFinding(
+            RULES.FS070,
+            model.binaryName,
+            model.sourceFile,
+            allInternal.length + " internal type(s): " + sample + more
+          );
+        }
+      }
+
+      if (asyncSignalClasses > 0) {
+        const suffix = contextualRegionCallSites > 0
+          ? " (" + contextualRegionCallSites + " region-guarded World/Block/Entity call reference(s) co-located in those classes)"
+          : "";
+        notes.push(
+          "Detected async / off-region task submission in " + asyncSignalClasses + " class(es)" + suffix +
+          ". Run the FoliaScan CLI or GitHub Action (uses: SalyyS1/foliascan@main) for full intra-jar call-graph taint-flow analysis (FS050-FS064)."
+        );
+      }
+
+      findings.sort((a, b) => {
+        const rankDiff = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
+        if (rankDiff !== 0) return rankDiff;
+        if (a.location.className !== b.location.className) {
+          return a.location.className.localeCompare(b.location.className);
+        }
+        return a.ruleId.localeCompare(b.ruleId);
+      });
+
+      const counts = { BLOCKER: 0, CRITICAL: 0, WARNING: 0, INFO: 0 };
+      for (const f of findings) counts[f.severity] += 1;
+
+      let status = "PASS";
+      if (counts.BLOCKER > 0 || counts.CRITICAL > 0) {
+        status = "FAIL";
+      } else if (patcherMarker) {
+        status = "PATCHED";
+      }
+
+      return {
+        jar: fileName,
+        byteSize,
+        pluginName: descriptor ? descriptor.name : null,
+        pluginVersion: descriptor ? descriptor.version : null,
+        mainClass: descriptor ? descriptor.main : null,
+        apiVersion: descriptor ? descriptor.apiVersion : null,
+        descriptorSource: descriptor ? descriptor.source : null,
+        hasDescriptor: Boolean(descriptor),
+        declaresFoliaSupport: Boolean(descriptor && descriptor.foliaSupported),
+        patchedByTool: Boolean(patcherMarker),
+        classesScanned: classMap.size,
+        totalClassesInJar: classEntries.length,
+        foliaApiUsages,
+        status,
+        counts,
+        notes,
+        findings
+      };
+    }
+
+    async function prepareJarFile(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const entries = parseZipIndex(arrayBuffer);
+      const byName = new Map();
+      for (const e of entries) byName.set(e.name, e);
+
+      let descriptor = null;
+      for (const descName of ["paper-plugin.yml", "plugin.yml"]) {
+        const descEntry = byName.get(descName);
+        if (descEntry) {
+          const bytes = await extractEntryBytes(arrayBuffer, descEntry);
+          descriptor = parsePluginDescriptor(UTF8_DECODER.decode(bytes), descName);
+          break;
+        }
+      }
+
+      const patcherMarker = PATCHER_MARKERS.find((m) => byName.has(m)) || null;
+      return {
+        fileName: file.name,
+        byteSize: arrayBuffer.byteLength,
+        arrayBuffer,
+        entries,
+        descriptor,
+        patcherMarker,
+        parsedClassCache: new Map()
+      };
+    }
+
+    // =========================================================================
+    // 6. Synthetic Valid .jar + 0xCAFEBABE Bytecode Builder (1-Click Demo)
+    // =========================================================================
+
+    const CRC32_TABLE = (() => {
+      const table = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) {
+          c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        table[i] = c >>> 0;
+      }
+      return table;
+    })();
+
+    function crc32(bytes) {
+      let c = 0xffffffff;
+      for (let i = 0; i < bytes.length; i++) {
+        c = CRC32_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+      }
+      return (c ^ 0xffffffff) >>> 0;
+    }
+
+    function buildSyntheticClassBytes({
+      thisClass,
+      superClass = "java/lang/Object",
+      sourceFile = null,
+      methodRefs = [],
+      interfaceMethodRefs = [],
+      classRefs = [],
+      declaredMethods = [{ name: "<init>", descriptor: "()V" }]
+    }) {
+      const cp = [null];
+      const utf8Cache = new Map();
+      const classCache = new Map();
+      const natCache = new Map();
+
+      const addUtf8 = (str) => {
+        if (utf8Cache.has(str)) return utf8Cache.get(str);
+        const encoded = new TextEncoder().encode(str);
+        const idx = cp.length;
+        cp.push({ tag: 1, bytes: encoded });
+        utf8Cache.set(str, idx);
+        return idx;
+      };
+
+      const addClass = (internalName) => {
+        if (classCache.has(internalName)) return classCache.get(internalName);
+        const nameIndex = addUtf8(internalName);
+        const idx = cp.length;
+        cp.push({ tag: 7, nameIndex });
+        classCache.set(internalName, idx);
+        return idx;
+      };
+
+      const addNameAndType = (name, descriptor) => {
+        const key = name + ":" + descriptor;
+        if (natCache.has(key)) return natCache.get(key);
+        const nameIndex = addUtf8(name);
+        const descriptorIndex = addUtf8(descriptor);
+        const idx = cp.length;
+        cp.push({ tag: 12, nameIndex, descriptorIndex });
+        natCache.set(key, idx);
+        return idx;
+      };
+
+      const thisClassIdx = addClass(thisClass);
+      const superClassIdx = addClass(superClass);
+
+      const extraClassRefIdxs = classRefs.map((cname) => addClass(cname));
+      const methodRefIdxs = methodRefs.map((m) => {
+        const classIndex = addClass(m.owner);
+        const nameAndTypeIndex = addNameAndType(m.name, m.descriptor || "()V");
+        const idx = cp.length;
+        cp.push({ tag: 10, classIndex, nameAndTypeIndex });
+        return idx;
+      });
+      const ifaceMethodRefIdxs = interfaceMethodRefs.map((im) => {
+        const classIndex = addClass(im.owner);
+        const nameAndTypeIndex = addNameAndType(im.name, im.descriptor || "()V");
+        const idx = cp.length;
+        cp.push({ tag: 11, classIndex, nameAndTypeIndex });
+        return idx;
+      });
+
+      const codeBytesList = [];
+      for (const idx of methodRefIdxs) {
+        codeBytesList.push(0xb8, (idx >>> 8) & 0xff, idx & 0xff); // invokestatic
+      }
+      for (const idx of ifaceMethodRefIdxs) {
+        codeBytesList.push(0xb9, (idx >>> 8) & 0xff, idx & 0xff, 1, 0); // invokeinterface
+      }
+      for (const idx of extraClassRefIdxs) {
+        codeBytesList.push(0xbb, (idx >>> 8) & 0xff, idx & 0xff); // new
+      }
+      codeBytesList.push(0xb1); // return
+      const codeBytes = Uint8Array.from(codeBytesList);
+      const codeAttrNameIdx = addUtf8("Code");
+
+      const methodEntries = declaredMethods.map((m) => ({
+        nameIndex: addUtf8(m.name),
+        descriptorIndex: addUtf8(m.descriptor)
+      }));
+
+      let sourceAttrNameIdx = 0;
+      let sourceFileIdx = 0;
+      if (sourceFile) {
+        sourceAttrNameIdx = addUtf8("SourceFile");
+        sourceFileIdx = addUtf8(sourceFile);
+      }
+
+      const chunks = [];
+      const pushU1 = (v) => chunks.push(Uint8Array.of(v & 0xff));
+      const pushU2 = (v) => chunks.push(Uint8Array.of((v >>> 8) & 0xff, v & 0xff));
+      const pushU4 = (v) => chunks.push(Uint8Array.of((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff));
+
+      pushU4(0xcafebabe);
+      pushU2(0);  // minor
+      pushU2(65); // major = Java 21
+      pushU2(cp.length);
+
+      for (let i = 1; i < cp.length; i++) {
+        const item = cp[i];
+        pushU1(item.tag);
+        if (item.tag === 1) {
+          pushU2(item.bytes.length);
+          chunks.push(item.bytes);
+        } else if (item.tag === 7) {
+          pushU2(item.nameIndex);
+        } else if (item.tag === 10 || item.tag === 11) {
+          pushU2(item.classIndex);
+          pushU2(item.nameAndTypeIndex);
+        } else if (item.tag === 12) {
+          pushU2(item.nameIndex);
+          pushU2(item.descriptorIndex);
+        }
+      }
+
+      pushU2(0x0021); // ACC_PUBLIC | ACC_SUPER
+      pushU2(thisClassIdx);
+      pushU2(superClassIdx);
+      pushU2(0); // interfaces_count
+      pushU2(0); // fields_count
+
+      pushU2(methodEntries.length);
+      methodEntries.forEach((m, idx) => {
+        pushU2(0x0001); // ACC_PUBLIC
+        pushU2(m.nameIndex);
+        pushU2(m.descriptorIndex);
+        if (idx === methodEntries.length - 1) {
+          pushU2(1); // 1 attribute: Code
+          pushU2(codeAttrNameIdx);
+          pushU4(12 + codeBytes.length);
+          pushU2(4); // max_stack
+          pushU2(4); // max_locals
+          pushU4(codeBytes.length);
+          chunks.push(codeBytes);
+          pushU2(0); // exception_table_length
+          pushU2(0); // attributes_count
+        } else {
+          pushU2(0);
+        }
+      });
+
+      if (sourceFile) {
+        pushU2(1);
+        pushU2(sourceAttrNameIdx);
+        pushU4(2);
+        pushU2(sourceFileIdx);
+      } else {
+        pushU2(0);
+      }
+
+      let total = 0;
+      for (const c of chunks) total += c.length;
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const c of chunks) {
+        out.set(c, offset);
+        offset += c.length;
+      }
+      return out;
+    }
+
+    function buildZipJarBytes(fileEntries) {
+      const encoder = new TextEncoder();
+      const localParts = [];
+      const centralParts = [];
+      let localOffset = 0;
+
+      for (const entry of fileEntries) {
+        const nameBytes = encoder.encode(entry.name);
+        const data = entry.data instanceof Uint8Array ? entry.data : encoder.encode(entry.data);
+        const sum = crc32(data);
+
+        const lfh = new Uint8Array(30 + nameBytes.length);
+        const lv = new DataView(lfh.buffer);
+        lv.setUint32(0, 0x04034b50, true);
+        lv.setUint16(4, 20, true);
+        lv.setUint16(6, 0, true);
+        lv.setUint16(8, 0, true); // Store
+        lv.setUint16(10, 0, true);
+        lv.setUint16(12, 0x21, true);
+        lv.setUint32(14, sum, true);
+        lv.setUint32(18, data.length, true);
+        lv.setUint32(22, data.length, true);
+        lv.setUint16(26, nameBytes.length, true);
+        lv.setUint16(28, 0, true);
+        lfh.set(nameBytes, 30);
+
+        localParts.push(lfh, data);
+
+        const cdh = new Uint8Array(46 + nameBytes.length);
+        const cv = new DataView(cdh.buffer);
+        cv.setUint32(0, 0x02014b50, true);
+        cv.setUint16(4, 20, true);
+        cv.setUint16(6, 20, true);
+        cv.setUint16(8, 0, true);
+        cv.setUint16(10, 0, true);
+        cv.setUint16(12, 0, true);
+        cv.setUint16(14, 0x21, true);
+        cv.setUint32(16, sum, true);
+        cv.setUint32(20, data.length, true);
+        cv.setUint32(24, data.length, true);
+        cv.setUint16(28, nameBytes.length, true);
+        cv.setUint16(30, 0, true);
+        cv.setUint16(32, 0, true);
+        cv.setUint16(34, 0, true);
+        cv.setUint16(36, 0, true);
+        cv.setUint32(38, 0, true);
+        cv.setUint32(42, localOffset, true);
+        cdh.set(nameBytes, 46);
+        centralParts.push(cdh);
+
+        localOffset += lfh.length + data.length;
+      }
+
+      let cdSize = 0;
+      for (const c of centralParts) cdSize += c.length;
+
+      const eocd = new Uint8Array(22);
+      const ev = new DataView(eocd.buffer);
+      ev.setUint32(0, 0x06054b50, true);
+      ev.setUint16(4, 0, true);
+      ev.setUint16(6, 0, true);
+      ev.setUint16(8, fileEntries.length, true);
+      ev.setUint16(10, fileEntries.length, true);
+      ev.setUint32(12, cdSize, true);
+      ev.setUint32(16, localOffset, true);
+      ev.setUint16(20, 0, true);
+
+      const out = new Uint8Array(localOffset + cdSize + 22);
+      let pos = 0;
+      for (const part of localParts) { out.set(part, pos); pos += part.length; }
+      for (const part of centralParts) { out.set(part, pos); pos += part.length; }
+      out.set(eocd, pos);
+      return out;
+    }
+
+    function createSampleLegacyJarFile() {
+      const pluginYml = [
+        "name: SkyArenaLegacy",
+        "version: 2.4.1",
+        "main: com.example.skyarena.SkyArenaPlugin",
+        "api-version: '1.21'"
+      ].join("\n") + "\n";
+
+      const mainClass = buildSyntheticClassBytes({
+        thisClass: "com/example/skyarena/SkyArenaPlugin",
+        superClass: "org/bukkit/plugin/java/JavaPlugin",
+        sourceFile: "SkyArenaPlugin.java",
+        methodRefs: [
+          { owner: "org/bukkit/Bukkit", name: "getScheduler", descriptor: "()Lorg/bukkit/scheduler/BukkitScheduler;" },
+          { owner: "org/bukkit/Bukkit", name: "createWorld", descriptor: "(Lorg/bukkit/WorldCreator;)Lorg/bukkit/World;" },
+          { owner: "org/bukkit/Bukkit", name: "isPrimaryThread", descriptor: "()Z" }
+        ],
+        interfaceMethodRefs: [
+          { owner: "org/bukkit/scheduler/BukkitScheduler", name: "runTaskTimer", descriptor: "(Lorg/bukkit/plugin/Plugin;Ljava/lang/Runnable;JJ)Lorg/bukkit/scheduler/BukkitTask;" },
+          { owner: "org/bukkit/World", name: "getTickableTileEntityCount", descriptor: "()I" }
+        ]
+      });
+
+      const runnableTask = buildSyntheticClassBytes({
+        thisClass: "com/example/skyarena/MatchCountdownTask",
+        superClass: "org/bukkit/scheduler/BukkitRunnable",
+        sourceFile: "MatchCountdownTask.java",
+        interfaceMethodRefs: [
+          { owner: "org/bukkit/entity/Player", name: "teleport", descriptor: "(Lorg/bukkit/Location;)Z" }
+        ]
+      });
+
+      const hudClass = buildSyntheticClassBytes({
+        thisClass: "com/example/skyarena/hud/ArenaScoreboard",
+        sourceFile: "ArenaScoreboard.java",
+        declaredMethods: [
+          { name: "<init>", descriptor: "()V" },
+          { name: "onAsyncChat", descriptor: "(Lorg/bukkit/event/player/AsyncPlayerChatEvent;)V" }
+        ],
+        interfaceMethodRefs: [
+          { owner: "org/bukkit/scoreboard/Scoreboard", name: "registerNewObjective", descriptor: "(Ljava/lang/String;Ljava/lang/String;)Lorg/bukkit/scoreboard/Objective;" },
+          { owner: "org/bukkit/entity/Player", name: "setScoreboard", descriptor: "(Lorg/bukkit/scoreboard/Scoreboard;)V" },
+          { owner: "org/bukkit/World", name: "getChunkAt", descriptor: "(II)Lorg/bukkit/Chunk;" }
+        ],
+        classRefs: [
+          "net/minecraft/server/level/ServerPlayer",
+          "org/bukkit/craftbukkit/entity/CraftPlayer"
+        ]
+      });
+
+      const shadedHikari = buildSyntheticClassBytes({
+        thisClass: "com/zaxxer/hikari/HikariConfig",
+        sourceFile: "HikariConfig.java",
+        methodRefs: [
+          { owner: "org/bukkit/Bukkit", name: "isPrimaryThread", descriptor: "()Z" }
+        ]
+      });
+
+      const bytes = buildZipJarBytes([
+        { name: "plugin.yml", data: pluginYml },
+        { name: "com/example/skyarena/SkyArenaPlugin.class", data: mainClass },
+        { name: "com/example/skyarena/MatchCountdownTask.class", data: runnableTask },
+        { name: "com/example/skyarena/hud/ArenaScoreboard.class", data: hudClass },
+        { name: "com/zaxxer/hikari/HikariConfig.class", data: shadedHikari }
+      ]);
+      return new File([bytes], "SkyArenaLegacy-2.4.1.jar", { type: "application/java-archive" });
+    }
+
+    function createSampleMatrixFiles() {
+      const passJar = buildZipJarBytes([
+        {
+          name: "paper-plugin.yml",
+          data: "name: RegionHomes\nversion: 1.3.0\nmain: dev.salyvn.regionhomes.RegionHomesPlugin\napi-version: '1.21'\nfolia-supported: true\n"
+        },
+        {
+          name: "dev/salyvn/regionhomes/RegionHomesPlugin.class",
+          data: buildSyntheticClassBytes({
+            thisClass: "dev/salyvn/regionhomes/RegionHomesPlugin",
+            superClass: "org/bukkit/plugin/java/JavaPlugin",
+            sourceFile: "RegionHomesPlugin.kt",
+            methodRefs: [
+              { owner: "org/bukkit/Bukkit", name: "getGlobalRegionScheduler", descriptor: "()Lio/papermc/paper/threadedregions/scheduler/GlobalRegionScheduler;" }
+            ],
+            interfaceMethodRefs: [
+              { owner: "org/bukkit/entity/Player", name: "teleportAsync", descriptor: "(Lorg/bukkit/Location;)Ljava/util/concurrent/CompletableFuture;" }
+            ]
+          })
+        }
+      ]);
+
+      const patchedJar = buildZipJarBytes([
+        {
+          name: "plugin.yml",
+          data: "name: CrateSpawnerPatched\nversion: 4.0.2\nmain: com.example.crates.CratePlugin\napi-version: '1.21'\nfolia-supported: true\n"
+        },
+        {
+          name: "com/example/crates/CratePlugin.class",
+          data: buildSyntheticClassBytes({
+            thisClass: "com/example/crates/CratePlugin",
+            superClass: "org/bukkit/plugin/java/JavaPlugin",
+            sourceFile: "CratePlugin.java"
+          })
+        },
+        {
+          name: "com/patch/foliaphantom/patcher/FoliaPatcher.class",
+          data: buildSyntheticClassBytes({
+            thisClass: "com/patch/foliaphantom/patcher/FoliaPatcher",
+            sourceFile: "FoliaPatcher.java"
+          })
+        }
+      ]);
+
+      return [
+        new File([passJar], "RegionHomes-1.3.0.jar", { type: "application/java-archive" }),
+        new File([patchedJar], "CrateSpawner-4.0.2-patched.jar", { type: "application/java-archive" }),
+        createSampleLegacyJarFile()
+      ];
+    }
+
+    // =========================================================================
+    // 7. UI Rendering, Export & Event Wiring
+    // =========================================================================
+
+    let preparedJars = [];
+    let currentReports = [];
+
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("fileInput");
+    const browseBtn = document.getElementById("browseBtn");
+    const sampleLegacyBtn = document.getElementById("sampleLegacyBtn");
+    const sampleMatrixBtn = document.getElementById("sampleMatrixBtn");
+    const scanShadedToggle = document.getElementById("scanShadedToggle");
+    const clearBtn = document.getElementById("clearBtn");
+    const statusBanner = document.getElementById("statusBanner");
+    const resultsSection = document.getElementById("resultsSection");
+    const summaryStats = document.getElementById("summaryStats");
+    const matrixBody = document.getElementById("matrixBody");
+    const jarDetailsList = document.getElementById("jarDetailsList");
+    const copyMdBtn = document.getElementById("copyMdBtn");
+    const downloadMdBtn = document.getElementById("downloadMdBtn");
+    const downloadJsonBtn = document.getElementById("downloadJsonBtn");
+    const rulesRefBody = document.getElementById("rulesRefBody");
+
+    function el(tag, attrs = {}, children = []) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === "className") node.className = v;
+        else if (k === "textContent") node.textContent = v;
+        else node.setAttribute(k, v);
+      }
+      for (const child of children) {
+        if (typeof child === "string") node.appendChild(document.createTextNode(child));
+        else if (child) node.appendChild(child);
+      }
+      return node;
+    }
+
+    function setStatus(message, isError = false) {
+      statusBanner.textContent = message;
+      statusBanner.style.borderColor = isError ? "rgba(248, 81, 73, 0.55)" : "var(--border)";
+      statusBanner.style.color = isError ? "var(--fail)" : "var(--fg)";
+      statusBanner.classList.toggle("visible", Boolean(message));
+    }
+
+    function renderRulesCatalog() {
+      rulesRefBody.replaceChildren();
+      for (const rule of Object.values(RULES)) {
+        const sevClass = "badge badge-" + rule.severity.toLowerCase();
+        rulesRefBody.appendChild(
+          el("tr", {}, [
+            el("td", { className: "mono", textContent: rule.id }),
+            el("td", {}, [el("span", { className: sevClass, textContent: rule.severity })]),
+            el("td", { textContent: rule.title }),
+            el("td", { className: "mono", textContent: rule.provenance })
+          ])
+        );
+      }
+    }
+
+    function statusBadge(status) {
+      const cls = status === "PASS" ? "badge badge-pass"
+        : status === "PATCHED" ? "badge badge-patched"
+        : "badge badge-fail";
+      return el("span", { className: cls, textContent: status });
+    }
+
+    function renderReports() {
+      if (currentReports.length === 0) {
+        resultsSection.classList.add("hidden");
+        clearBtn.classList.add("hidden");
+        return;
+      }
+      resultsSection.classList.remove("hidden");
+      clearBtn.classList.remove("hidden");
+
+      const passCount = currentReports.filter((r) => r.status === "PASS").length;
+      const patchedCount = currentReports.filter((r) => r.status === "PATCHED").length;
+      const failCount = currentReports.filter((r) => r.status === "FAIL").length;
+      const totalClasses = currentReports.reduce((acc, r) => acc + r.classesScanned, 0);
+      const totalFindings = currentReports.reduce((acc, r) => acc + r.findings.length, 0);
+
+      summaryStats.replaceChildren(
+        el("div", { className: "stat-box" }, [
+          el("div", { className: "stat-label", textContent: "JARs Scanned" }),
+          el("div", { className: "stat-value", textContent: String(currentReports.length) })
+        ]),
+        el("div", { className: "stat-box" }, [
+          el("div", { className: "stat-label", textContent: "PASS" }),
+          el("div", { className: "stat-value", style: "color: var(--pass)", textContent: String(passCount) })
+        ]),
+        el("div", { className: "stat-box" }, [
+          el("div", { className: "stat-label", textContent: "PATCHED (FS002)" }),
+          el("div", { className: "stat-value", style: "color: var(--patched)", textContent: String(patchedCount) })
+        ]),
+        el("div", { className: "stat-box" }, [
+          el("div", { className: "stat-label", textContent: "FAIL" }),
+          el("div", { className: "stat-value", style: "color: var(--fail)", textContent: String(failCount) })
+        ]),
+        el("div", { className: "stat-box" }, [
+          el("div", { className: "stat-label", textContent: "Classes Parsed" }),
+          el("div", { className: "stat-value", textContent: String(totalClasses) })
+        ]),
+        el("div", { className: "stat-box" }, [
+          el("div", { className: "stat-label", textContent: "Total Findings" }),
+          el("div", { className: "stat-value", textContent: String(totalFindings) })
+        ])
+      );
+
+      matrixBody.replaceChildren();
+      jarDetailsList.replaceChildren();
+
+      currentReports.forEach((rep, index) => {
+        const pluginLabel = rep.pluginName
+          ? rep.pluginName + (rep.pluginVersion ? " " + rep.pluginVersion : "")
+          : "(library)";
+        const descLabel = rep.hasDescriptor ? rep.descriptorSource : "none (library)";
+        const foliaLabel = !rep.hasDescriptor
+          ? "n/a"
+          : rep.declaresFoliaSupport
+            ? (rep.patchedByTool ? "true (patched)" : "true")
+            : "false";
+
+        matrixBody.appendChild(
+          el("tr", {}, [
+            el("td", {}, [statusBadge(rep.status)]),
+            el("td", { className: "mono", textContent: rep.jar }),
+            el("td", { textContent: pluginLabel }),
+            el("td", { className: "mono", textContent: descLabel }),
+            el("td", { className: "mono", textContent: foliaLabel }),
+            el("td", { className: "num", textContent: String(rep.classesScanned) }),
+            el("td", { className: "num", textContent: String(rep.counts.BLOCKER) }),
+            el("td", { className: "num", textContent: String(rep.counts.CRITICAL) }),
+            el("td", { className: "num", textContent: String(rep.counts.WARNING) }),
+            el("td", { className: "num", textContent: String(rep.counts.INFO) })
+          ])
+        );
+
+        const card = el("details", { className: "jar-card" });
+        if (index === 0 || rep.status !== "PASS") card.open = true;
+
+        const summaryLeft = el("div", { style: "display:flex;align-items:center;gap:10px;flex-wrap:wrap;" }, [
+          statusBadge(rep.status),
+          el("span", { className: "mono", textContent: rep.jar }),
+          el("span", { style: "color:var(--muted);font-weight:400;", textContent: pluginLabel })
+        ]);
+        const summaryRight = el("div", { className: "mono", style: "font-size:0.8rem;color:var(--muted);" }, [
+          rep.findings.length + " finding(s) | " + rep.classesScanned + " classes | " + rep.foliaApiUsages + " Folia API ref(s)"
+        ]);
+        card.appendChild(el("summary", {}, [summaryLeft, summaryRight]));
+
+        const body = el("div", { className: "jar-card-body" });
+        body.appendChild(
+          el("div", { className: "meta-grid" }, [
+            el("div", { className: "meta-item" }, [
+              el("span", { className: "meta-key", textContent: "Main Class" }),
+              el("span", { className: "mono", textContent: rep.mainClass || "(none)" })
+            ]),
+            el("div", { className: "meta-item" }, [
+              el("span", { className: "meta-key", textContent: "Descriptor / api-version" }),
+              el("span", { className: "mono", textContent: descLabel + " / " + (rep.apiVersion || "unset") })
+            ]),
+            el("div", { className: "meta-item" }, [
+              el("span", { className: "meta-key", textContent: "folia-supported" }),
+              el("span", { className: "mono", textContent: foliaLabel })
+            ]),
+            el("div", { className: "meta-item" }, [
+              el("span", { className: "meta-key", textContent: "Folia Region API References" }),
+              el("span", { className: "mono", textContent: String(rep.foliaApiUsages) })
+            ])
+          ])
+        );
+
+        if (rep.notes.length > 0) {
+          body.appendChild(
+            el("ul", { className: "notes-list" }, rep.notes.map((n) => el("li", { textContent: n })))
+          );
+        }
+
+        if (rep.findings.length === 0) {
+          body.appendChild(
+            el("p", {
+              style: "margin:0;color:var(--pass);font-family:var(--mono);font-size:0.85rem;",
+              textContent: "No core Folia incompatibilities matched in scanned bytecode."
+            })
+          );
+        } else {
+          const byClass = new Map();
+          for (const f of rep.findings) {
+            const cname = f.location.className;
+            if (!byClass.has(cname)) byClass.set(cname, []);
+            byClass.get(cname).push(f);
+          }
+
+          for (const [cname, items] of byClass.entries()) {
+            const worst = items.reduce((acc, cur) =>
+              SEVERITY_RANK[cur.severity] > SEVERITY_RANK[acc] ? cur.severity : acc, "INFO"
+            );
+            const group = el("details", { className: "class-group" });
+            group.open = true;
+            group.appendChild(
+              el("summary", {}, [
+                el("span", { textContent: cname }),
+                el("span", {}, [
+                  el("span", {
+                    className: "badge badge-" + worst.toLowerCase(),
+                    textContent: items.length + " " + worst.toLowerCase()
+                  })
+                ])
+              ])
+            );
+
+            for (const f of items) {
+              const detailChildren = [
+                el("div", { className: "finding-head" }, [
+                  el("span", { className: "badge badge-" + f.severity.toLowerCase(), textContent: f.severity }),
+                  el("strong", { className: "mono", textContent: f.ruleId }),
+                  el("span", { textContent: f.title }),
+                  el("span", { className: "finding-evidence", textContent: f.evidence })
+                ]),
+                el("div", { className: "finding-detail" }, [
+                  el("strong", { textContent: "Why: " }),
+                  document.createTextNode(f.why)
+                ]),
+                el("div", { className: "finding-detail" }, [
+                  el("strong", { textContent: "Fix: " }),
+                  document.createTextNode(f.fix)
+                ]),
+                el("div", { className: "finding-detail mono" }, [
+                  el("strong", { textContent: "Source: " }),
+                  document.createTextNode(f.provenance)
+                ])
+              ];
+              if (f.context) {
+                detailChildren.splice(1, 0, el("div", { className: "finding-detail" }, [
+                  el("strong", { textContent: "Guard note: " }),
+                  document.createTextNode(f.context)
+                ]));
+              }
+              group.appendChild(el("div", { className: "finding-item" }, detailChildren));
+            }
+            body.appendChild(group);
+          }
+        }
+
+        card.appendChild(body);
+        jarDetailsList.appendChild(card);
+      });
+    }
+
+    function buildMarkdownReport() {
+      const lines = [
+        "# FoliaScan Browser Compatibility Matrix",
+        "",
+        "| Verdict | Artifact | Plugin | Descriptor | folia-supported | Classes | Blocker | Critical | Warning | Info |",
+        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |"
+      ];
+      for (const rep of currentReports) {
+        const pluginLabel = rep.pluginName
+          ? rep.pluginName + (rep.pluginVersion ? " " + rep.pluginVersion : "")
+          : "(library)";
+        const descLabel = rep.hasDescriptor ? rep.descriptorSource : "none";
+        const foliaLabel = !rep.hasDescriptor
+          ? "n/a"
+          : rep.declaresFoliaSupport
+            ? (rep.patchedByTool ? "true (patched)" : "true")
+            : "false";
+        lines.push(
+          `| **${rep.status}** | \`${rep.jar}\` | ${pluginLabel} | \`${descLabel}\` | \`${foliaLabel}\` | ${rep.classesScanned} | ${rep.counts.BLOCKER} | ${rep.counts.CRITICAL} | ${rep.counts.WARNING} | ${rep.counts.INFO} |`
+        );
+      }
+      for (const rep of currentReports) {
+        if (rep.findings.length === 0) continue;
+        lines.push("", `## ${rep.jar}`, "");
+        for (const f of rep.findings) {
+          lines.push(`- **[${f.severity}] ${f.ruleId}** \`${f.location.className}\`: \`${f.evidence}\` - ${f.title}`);
+        }
+      }
+      return lines.join("\n") + "\n";
+    }
+
+    function downloadBlob(filename, content, mime) {
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    async function rescanAllPrepared() {
+      const scanShaded = scanShadedToggle.checked;
+      const next = [];
+      for (const prep of preparedJars) {
+        next.push(await scanPreparedJar(prep, scanShaded));
+      }
+      currentReports = next;
+      renderReports();
+    }
+
+    async function handleFiles(fileList) {
+      const files = Array.from(fileList || []).filter((f) => f && f.name);
+      if (files.length === 0) return;
+
+      const t0 = performance.now();
+      setStatus("Unpacking and analysing " + files.length + " JAR file(s) locally...");
+      const newlyPrepared = [];
+      const errors = [];
+
+      for (const file of files) {
+        try {
+          newlyPrepared.push(await prepareJarFile(file));
+        } catch (err) {
+          errors.push(file.name + ": " + (err && err.message ? err.message : String(err)));
+        }
+      }
+
+      if (newlyPrepared.length > 0) {
+        const byName = new Map(preparedJars.map((p) => [p.fileName, p]));
+        for (const prep of newlyPrepared) {
+          byName.set(prep.fileName, prep);
+        }
+        preparedJars = Array.from(byName.values());
+        await rescanAllPrepared();
+      }
+
+      const elapsed = Math.round(performance.now() - t0);
+      if (errors.length > 0) {
+        setStatus("Completed in " + elapsed + " ms with error(s): " + errors.join("; "), true);
+      } else {
+        setStatus(
+          "Scanned " + preparedJars.length + " JAR(s) locally in " + elapsed + " ms. Zero bytes left your browser."
+        );
+      }
+    }
+
+    browseBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      fileInput.click();
+    });
+
+    dropzone.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      fileInput.click();
+    });
+
+    dropzone.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        fileInput.click();
+      }
+    });
+
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files && fileInput.files.length > 0) {
+        handleFiles(fileInput.files);
+        fileInput.value = "";
+      }
+    });
+
+    ["dragenter", "dragover"].forEach((evt) => {
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.add("dragover");
+      });
+    });
+
+    ["dragleave", "drop"].forEach((evt) => {
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove("dragover");
+      });
+    });
+
+    dropzone.addEventListener("drop", (e) => {
+      if (e.dataTransfer && e.dataTransfer.files) {
+        handleFiles(e.dataTransfer.files);
+      }
+    });
+
+    sampleLegacyBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      preparedJars = [];
+      await handleFiles([createSampleLegacyJarFile()]);
+    });
+
+    sampleMatrixBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      preparedJars = [];
+      await handleFiles(createSampleMatrixFiles());
+    });
+
+    scanShadedToggle.addEventListener("change", () => {
+      if (preparedJars.length > 0) {
+        rescanAllPrepared();
+      }
+    });
+
+    clearBtn.addEventListener("click", () => {
+      preparedJars = [];
+      currentReports = [];
+      setStatus("");
+      renderReports();
+    });
+
+    copyMdBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(buildMarkdownReport());
+        setStatus("Copied Markdown compatibility report to clipboard.");
+      } catch {
+        setStatus("Clipboard write blocked by browser permissions; use Download .md instead.", true);
+      }
+    });
+
+    downloadMdBtn.addEventListener("click", () => {
+      downloadBlob("foliascan-matrix.md", buildMarkdownReport(), "text/markdown;charset=utf-8");
+    });
+
+    downloadJsonBtn.addEventListener("click", () => {
+      const payload = {
+        tool: "foliascan-browser",
+        toolVersion: "0.2.1",
+        scanShadedDependencies: scanShadedToggle.checked,
+        jars: currentReports
+      };
+      downloadBlob("foliascan-report.json", JSON.stringify(payload, null, 2) + "\n", "application/json;charset=utf-8");
+    });
+
+    renderRulesCatalog();
+  })();
+  </script>
+</body>
+</html>

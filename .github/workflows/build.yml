@@ -37,6 +37,13 @@ jobs:
           java -jar "$CLI" --rules > /dev/null
           java -jar "$CLI" build/libs/foliascan-*-thin.jar --no-color --fail-on never
 
+      - name: Smoke test composite GitHub Action
+        uses: ./
+        with:
+          jar: build/libs/foliascan-*-thin.jar
+          fail-on: never
+          sarif-file: build/foliascan-smoke.sarif
+
       - name: Upload the CLI jar
         uses: actions/upload-artifact@v4
         with:

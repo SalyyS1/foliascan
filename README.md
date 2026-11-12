@@ -8,6 +8,8 @@ Tell whether a Minecraft plugin jar will actually survive on [Folia](https://git
 Works on any jar — including one you did not compile. Server owners can check a paid plugin
 before installing it; developers can gate a release in CI.
 
+**[Open Browser Drag-and-Drop JAR Scanner](https://salyys1.github.io/foliascan/)** | **[GitHub Action (`uses: SalyyS1/foliascan@main`)](#in-ci)** | **[CLI Releases](https://github.com/SalyyS1/foliascan/releases)**
+
 ![FoliaScan Bytecode Analysis Pipeline](assets/taint-and-guard-pipeline.svg)
 
 ## Why this exists
@@ -31,6 +33,22 @@ completely, and nothing tells you until a player triggers the code path:
 Adding `folia-supported: true` silences the loader, not the exceptions. FoliaScan finds the
 call sites that will still blow up.
 
+## Browser JAR Scanner (Zero Upload)
+
+Inspect one `.jar` or drop an entire server `plugins/` directory directly in your browser at
+**[https://salyys1.github.io/foliascan/](https://salyys1.github.io/foliascan/)**:
+
+- Unpacks ZIP headers and `0xCAFEBABE` JVM class constant pools locally using `ArrayBuffer` and
+  `DecompressionStream('deflate-raw')` with zero network uploads and zero external CDNs.
+- Evaluates `paper-plugin.yml` / `plugin.yml` (`FS001`), automated bytecode patcher markers
+  (`FS002`), unconditional Folia crashes (`FS010` through `FS041`), NMS internals (`FS070`), and
+  `isPrimaryThread` gates (`FS080`), skipping shaded vendor packages unless toggled on.
+- Renders a multi-JAR Server Compatibility Matrix (`PASS`, `PATCHED`, `FAIL`) with Markdown and
+  JSON export, plus a 1-click synthesized sample plugin `.jar` for instant testing.
+
+For full intra-jar call-graph async taint propagation (`FS050` through `FS064`), baseline files,
+and SARIF output, run the CLI or GitHub Action below.
+
 ## Install
 
 Requires Java 21+.
@@ -39,14 +57,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.2.0.jar MyPlugin.jar
+java -jar foliascan-0.2.1.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.2.0.jar MyPlugin.jar
+java -jar build/libs/foliascan-0.2.1.jar MyPlugin.jar
 ```
 
 ## Usage
@@ -80,16 +98,41 @@ foliascan /srv/mc/plugins --fail-on blocker
 
 ### In CI
 
+Gate any Paper, Folia, or Spigot repository in 3 lines with the official composite GitHub Action.
+It caches `foliascan-<version>.jar`, publishes a Markdown compatibility matrix to
+`$GITHUB_STEP_SUMMARY`, optionally writes a SARIF 2.1.0 report, and exits with FoliaScan's
+threshold exit code:
+
 ```yaml
-- name: Check Folia compatibility
-  run: |
-    java -jar foliascan.jar build/libs/*.jar \
-      --format sarif -o foliascan.sarif --fail-on critical
+- uses: SalyyS1/foliascan@main
+  with:
+    jar: build/libs/*.jar
+    fail-on: critical
+    sarif-file: foliascan.sarif
 
 - uses: github/codeql-action/upload-sarif@v3
   if: always()
   with:
     sarif_file: foliascan.sarif
+```
+
+| Input | Default | Purpose |
+| --- | --- | --- |
+| `jar` | *(required)* | Plugin JAR path(s), glob pattern(s), or directory of JARs |
+| `fail-on` | `critical` | Lowest severity that exits non-zero (`blocker`, `critical`, `warning`, `info`, `never`) |
+| `baseline` | `""` | Baseline JSON file path used to suppress accepted findings |
+| `disable` | `""` | Comma- or space-separated rule IDs to turn off (for example `FS063,FS070`) |
+| `all` | `false` | Report relocated third-party dependency packages too |
+| `sarif-file` | `""` | Path to write a SARIF 2.1.0 report alongside the step summary |
+| `version` | `0.2.1` | FoliaScan release version to download and cache |
+
+Or invoke the CLI JAR directly in any CI runner:
+
+```yaml
+- name: Check Folia compatibility
+  run: |
+    java -jar foliascan.jar build/libs/*.jar \
+      --format sarif -o foliascan.sarif --fail-on critical
 ```
 
 Adopting on a large legacy plugin? Record what exists today and fail only on new problems:
@@ -290,6 +333,19 @@ No Folia or Paper source is vendored, copied or redistributed here. The rule tab
 class and member names and quotes short diagnostic strings so that each claim can be audited.
 
 FoliaScan is an independent tool and is not affiliated with or endorsed by PaperMC.
+
+## Companion Minecraft Toolchain
+
+FoliaScan is part of a focused static-analysis, staging, resource-pack, and coding-agent suite by
+[SalyVn](https://github.com/SalyyS1):
+
+| Project | Role |
+| --- | --- |
+| [minecraftkit](https://github.com/SalyyS1/minecraftkit) | Offline RPG and Paper/Folia API catalog, 10 `/mc:*` skills for Claude Code and Codex, [web API explorer](https://salyys1.github.io/minecraftkit/), and stdio MCP server |
+| [serverdoctor](https://github.com/SalyyS1/serverdoctor) | Offline server diagnostics across logs, configs, JVM flags, plugin sets, worlds, crash reports, and access lists (CLI + MCP) |
+| [pluginscope](https://github.com/SalyyS1/pluginscope) | Static audits for plugin JAR packaging, shading/relocation, Paper API version compatibility, plugin stacks, and resource packs (CLI + MCP) |
+| [mcstage](https://github.com/SalyyS1/mcstage) | Standalone integration harness that boots real Paper, Folia, and Purpur servers, drives console commands, and asserts on logs |
+| [glyphsmith](https://github.com/SalyyS1/glyphsmith) | Deterministic Minecraft font glyph packer solving ascent, padding, advance, and negative-space shifts into a resource pack |
 
 ## Contributing
 
