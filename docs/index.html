@@ -754,6 +754,38 @@
         fix: "Remove the metric or track tile-entity counts per region explicitly.",
         provenance: "0001-Region-Threading-Base.patch (CraftWorld#getTickableTileEntityCount)"
       },
+      FS042: {
+        id: "FS042",
+        severity: "CRITICAL",
+        title: "Server#getTPS throws unconditionally on Folia",
+        why: "CraftServer#getTPS throws UnsupportedOperationException on Folia because tick rates are measured per thread region.",
+        fix: "Use Bukkit.getRegionTPS(Location) or monitor regional tick rates individually.",
+        provenance: "0001-Region-Threading-Base.patch (CraftServer#getTPS)"
+      },
+      FS043: {
+        id: "FS043",
+        severity: "CRITICAL",
+        title: "Bukkit.dispatchCommand() invoked across regional threads",
+        why: "CraftServer#dispatchCommand executes synchronously on the calling thread. If a command modifies entities or blocks outside the caller's region, Folia throws IllegalStateException.",
+        fix: "Dispatch commands via Bukkit.getGlobalRegionScheduler() or ensure the target region owns the command sender and arguments.",
+        provenance: "0001-Region-Threading-Base.patch (CraftServer#dispatchCommand)"
+      },
+      FS064: {
+        id: "FS064",
+        severity: "WARNING",
+        title: "World global-state call requires the global region",
+        why: "CraftWorld methods for time, weather, game rules, and chunk force-loading throw IllegalStateException off of the global region.",
+        fix: "Schedule the call on Bukkit.getGlobalRegionScheduler().execute(plugin, task).",
+        provenance: "0001-Region-Threading-Base.patch (RegionizedServer.ensureGlobalTickThread)"
+      },
+      FS065: {
+        id: "FS065",
+        severity: "WARNING",
+        title: "Chunk and world entity-query or spawn calls are region-guarded",
+        why: "CraftChunk entity/tile/block accessors and CraftWorld entity queries, ray traces, and spawns throw IllegalStateException off-region.",
+        fix: "Schedule chunk and entity operations on Bukkit.getRegionScheduler().execute(plugin, location, task).",
+        provenance: "0001-Region-Threading-Base.patch (TickThread.ensureTickThread guards)"
+      },
       FS070: {
         id: "FS070",
         severity: "WARNING",
@@ -769,6 +801,54 @@
         why: "Folia has no single main tick thread. Branching on isPrimaryThread() does not prove ownership of a chunk or entity.",
         fix: "Use Bukkit.isOwnedByCurrentRegion(location/entity), Bukkit.isGlobalTickThread(), or schedule directly onto the owning scheduler.",
         provenance: "0001-Region-Threading-Base.patch (removal of isPrimaryThread guards)"
+      },
+      FS081: {
+        id: "FS081",
+        severity: "WARNING",
+        title: "Unsynchronized static collection mutated from concurrent Folia tasks",
+        why: "Mutating unsynchronized static collections (HashMap, ArrayList) across concurrent Folia region/async threads risks ConcurrentModificationException or corrupt bucket chains.",
+        fix: "Replace with ConcurrentHashMap, CopyOnWriteArrayList, or guard behind explicit locks.",
+        provenance: "0002-Region-scheduler-API.patch (concurrent regional execution)"
+      },
+      FS082: {
+        id: "FS082",
+        severity: "WARNING",
+        title: "Cross-region passenger attachment or vehicle ejection without region synchronization",
+        why: "Mounting or ejecting passengers across regional boundaries throws IllegalStateException or corrupts passenger linked lists.",
+        fix: "Verify region ownership via isOwnedByCurrentRegion before passenger operations, or dispatch via EntityScheduler on both entities.",
+        provenance: "0001-Region-Threading-Base.patch (CraftEntity passenger region assertions)"
+      },
+      FS083: {
+        id: "FS083",
+        severity: "WARNING",
+        title: "EntityScheduler task submitted without handling entity retirement",
+        why: "If an entity despawns, dies, or unloads while a delayed or repeating task is queued on EntityScheduler, the task is dropped and only the retired callback runs. Providing a null retired callback drops cleanup logic.",
+        fix: "Provide a non-null retired callback to entity.getScheduler().runDelayed or runAtFixedRate to handle entity despawn gracefully.",
+        provenance: "0002-Region-scheduler-API.patch (EntityScheduler retired callback for dead/unloaded entities)"
+      },
+      FS084: {
+        id: "FS084",
+        severity: "WARNING",
+        title: "Unchained teleportAsync invocation discarding future before subsequent entity access",
+        why: "Calling entity.teleportAsync(location) and discarding the CompletableFuture before invoking subsequent entity methods executes concurrently while the entity is in-transit.",
+        fix: "Chain subsequent actions onto the returned CompletableFuture via .thenAccept(success -> { ... }) instead of executing synchronously.",
+        provenance: "0001-Region-Threading-Base.patch (CraftEntity#teleportAsync CompletableFuture)"
+      },
+      FS085: {
+        id: "FS085",
+        severity: "WARNING",
+        title: "Direct mutation of Bukkit.getOnlinePlayers() without per-player scheduler dispatch",
+        why: "Bukkit.getOnlinePlayers() returns players across all Folia thread regions. Calling mutating Player methods off the player's owning region throws IllegalStateException.",
+        fix: "Dispatch per-player operations to player.getScheduler().run(plugin, ...) or use Bukkit.getGlobalRegionScheduler() strictly for global broadcasts.",
+        provenance: "0001-Region-Threading-Base.patch (CraftServer#getOnlinePlayers across all regions)"
+      },
+      FS086: {
+        id: "FS086",
+        severity: "WARNING",
+        title: "Synchronous cross-region HumanEntity.openInventory() call",
+        why: "HumanEntity#openInventory(Inventory) requires both the player and the inventory holder to reside in the current thread region. Calling openInventory off-region throws IllegalStateException.",
+        fix: "Schedule openInventory on the player's owning region via player.getScheduler().run(plugin, ...) and verify tile-entity container location.",
+        provenance: "0001-Region-Threading-Base.patch (CraftHumanEntity#openInventory container region ownership checks)"
       }
     };
 
@@ -1630,6 +1710,54 @@
           // FS080: isPrimaryThread
           if ((ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") && ref.name === "isPrimaryThread") {
             emitOnce(RULES.FS080, simpleOwner + ".isPrimaryThread()", false);
+          }
+
+          // FS042: Server#getTPS
+          if ((ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") && ref.name === "getTPS") {
+            emitOnce(RULES.FS042, simpleOwner + ".getTPS()", true);
+          }
+
+          // FS043: Bukkit.dispatchCommand
+          if ((ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") && ref.name === "dispatchCommand") {
+            emitOnce(RULES.FS043, simpleOwner + ".dispatchCommand()", false);
+          }
+
+          // FS082: Cross-region passenger attachment or vehicle ejection
+          if (
+            ref.owner.startsWith("org/bukkit/entity/") &&
+            (ref.name === "addPassenger" || ref.name === "removePassenger" || ref.name === "setPassenger" || ref.name === "eject" || ref.name === "leaveVehicle")
+          ) {
+            emitOnce(RULES.FS082, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS083: EntityScheduler lifecycle race
+          if (
+            ref.owner.includes("EntityScheduler") &&
+            (ref.name === "runDelayed" || ref.name === "runAtFixedRate")
+          ) {
+            emitOnce(RULES.FS083, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS084: teleportAsync unchained
+          if (
+            ref.owner.startsWith("org/bukkit/entity/") &&
+            ref.name === "teleportAsync" &&
+            classContextualCalls > 0
+          ) {
+            emitOnce(RULES.FS084, simpleOwner + ".teleportAsync()", false);
+          }
+
+          // FS085: Bukkit.getOnlinePlayers
+          if ((ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") && ref.name === "getOnlinePlayers") {
+            emitOnce(RULES.FS085, simpleOwner + ".getOnlinePlayers()", false);
+          }
+
+          // FS086: HumanEntity.openInventory / container operations
+          if (
+            ref.owner.startsWith("org/bukkit/entity/") &&
+            (ref.name === "openInventory" || ref.name === "openWorkbench" || ref.name === "openEnchanting" || ref.name === "openMerchant" || ref.name === "closeInventory")
+          ) {
+            emitOnce(RULES.FS086, simpleOwner + "." + ref.name + "()", false);
           }
         }
 
@@ -2549,7 +2677,7 @@
     downloadJsonBtn.addEventListener("click", () => {
       const payload = {
         tool: "foliascan-browser",
-        toolVersion: "0.3.0",
+        toolVersion: "0.5.0",
         scanShadedDependencies: scanShadedToggle.checked,
         jars: currentReports
       };

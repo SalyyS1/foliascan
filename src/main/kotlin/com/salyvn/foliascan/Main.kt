@@ -10,6 +10,7 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.multiple
 import com.github.ajalt.clikt.parameters.options.option
+import com.github.ajalt.clikt.parameters.options.versionOption
 import com.github.ajalt.clikt.parameters.types.choice
 import com.github.ajalt.clikt.parameters.types.path
 import com.salyvn.foliascan.model.ScanReport
@@ -28,6 +29,10 @@ import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 
 class FoliaScanCommand : CliktCommand(name = "foliascan") {
+
+    init {
+        versionOption(BuildInfo.version)
+    }
 
     override fun help(context: Context) =
         "Report where a Minecraft plugin jar breaks under Folia's regionised threading."

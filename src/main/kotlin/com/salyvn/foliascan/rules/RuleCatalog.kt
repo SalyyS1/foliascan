@@ -291,8 +291,11 @@ object RuleCatalog {
         // The entity scheduler and the async teleport are the prescribed Folia APIs; flagging
         // them would contradict FS020 and FS012. Enum methods (values, valueOf, name, ordinal)
         // on nested entity enums (Villager$Profession, Horse$Color, etc.) are static constants.
+        // Passenger and inventory methods have their own specialized rules (FS082 and FS086).
         excludeMethods = setOf(
             "getScheduler", "teleportAsync", "values", "valueOf", "name", "ordinal",
+            "addPassenger", "removePassenger", "setPassenger", "eject", "leaveVehicle",
+            "openInventory", "openWorkbench", "openEnchanting", "openMerchant", "closeInventory",
         ),
         contextual = true,
     )
@@ -398,6 +401,98 @@ object RuleCatalog {
         ),
     )
 
+    val crossRegionPassenger = CallRule(
+        id = "FS082",
+        severity = Severity.WARNING,
+        title = "Cross-region passenger attachment or vehicle ejection without region synchronization",
+        why = "Under Folia, mounting an entity as a passenger or ejecting passengers " +
+            "(addPassenger, removePassenger, setPassenger, eject, leaveVehicle) requires " +
+            "both entities to reside in the exact same thread region. When called across " +
+            "regional boundaries or from an off-region context, Folia throws IllegalStateException " +
+            "or corrupts entity passenger linked lists.",
+        fix = "Verify region ownership via isOwnedByCurrentRegion before passenger operations, " +
+            "or dispatch via EntityScheduler on both vehicle and passenger before modifying passengers.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftEntity#addPassenger, #removePassenger, #eject, #leaveVehicle region assertions",
+        ),
+        owners = setOf("org/bukkit/entity/Entity"),
+        ownerPrefixes = setOf("org/bukkit/entity/"),
+        methods = setOf("addPassenger", "removePassenger", "setPassenger", "eject", "leaveVehicle"),
+        contextual = true,
+    )
+
+    val entitySchedulerLifecycle = ConcurrencyRule(
+        id = "FS083",
+        severity = Severity.WARNING,
+        title = "EntityScheduler task submitted without handling entity retirement",
+        why = "Folia's EntityScheduler executes callbacks on the region owning the entity, but " +
+            "if the entity is dead, despawned, or removed from the world before or during execution, " +
+            "the task is discarded and only the retired callback runs. Submitting tasks with a null " +
+            "retired callback drops critical cleanup logic (such as releasing locks, canceling state, or persisting data).",
+        fix = "Provide a non-null retired callback to entity.getScheduler().run(plugin, task, retired) " +
+            "or entity.getScheduler().execute(plugin, task, retired, delay) to handle entity despawn, death, or chunk unload gracefully.",
+        provenance = Provenance(
+            PATCH_SCHED_API,
+            "EntityScheduler#run, #execute retired callback for dead/unloaded entities",
+        ),
+    )
+
+    val unchainedTeleportAsync = ConcurrencyRule(
+        id = "FS084",
+        severity = Severity.WARNING,
+        title = "Unchained teleportAsync invocation discarding future without completion handling",
+        why = "Folia's entity.teleportAsync(Location) is asynchronous and transfers the entity to another region thread. " +
+            "Discarding the returned CompletableFuture or immediately executing subsequent entity calls without " +
+            "chaining off the future causes execution while the entity is in-transit or on another thread, " +
+            "throwing IllegalStateException off-region.",
+        fix = "Chain subsequent actions onto the returned CompletableFuture via .thenAccept(success -> { ... }) " +
+            "or .whenComplete(...) instead of discarding the future or executing synchronously.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftEntity#teleportAsync returns CompletableFuture for cross-region handoff",
+        ),
+    )
+
+    val onlinePlayersDirectMutation = CallRule(
+        id = "FS085",
+        severity = Severity.WARNING,
+        title = "Direct mutation of Bukkit.getOnlinePlayers() without per-player scheduler dispatch",
+        why = "On plain Paper, Bukkit.getOnlinePlayers() was commonly iterated on the main thread " +
+            "to broadcast, teleport, or modify all players. On Folia, players are partitioned " +
+            "across independent regional threads. Iterating over getOnlinePlayers() and directly " +
+            "invoking Player methods off the player's owning region throws IllegalStateException.",
+        fix = "Dispatch operations for each player to their individual player.getScheduler().run(plugin, ...) " +
+            "or use Bukkit.getGlobalRegionScheduler() strictly for global broadcasts that do not touch individual player state.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftServer#getOnlinePlayers contains players across all Folia regions",
+        ),
+        owners = setOf("org/bukkit/Bukkit", "org/bukkit/Server"),
+        methods = setOf("getOnlinePlayers"),
+        contextual = true,
+    )
+
+    val crossRegionInventory = CallRule(
+        id = "FS086",
+        severity = Severity.WARNING,
+        title = "Synchronous cross-region HumanEntity.openInventory() call",
+        why = "In Folia, HumanEntity#openInventory(Inventory) and related container opening methods " +
+            "require both the player and the inventory holder (tile entity, merchant, or entity) " +
+            "to reside in the current thread region. Calling openInventory off-region or across " +
+            "different regions throws IllegalStateException under Folia's container threading assertions.",
+        fix = "Schedule openInventory on the player's owning region via player.getScheduler().run(plugin, ...) " +
+            "and verify that any tile-entity inventory holder resides in the player's current region.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftHumanEntity#openInventory container region ownership checks",
+        ),
+        owners = setOf("org/bukkit/entity/HumanEntity", "org/bukkit/entity/Player"),
+        ownerPrefixes = setOf("org/bukkit/entity/"),
+        methods = setOf("openInventory", "openWorkbench", "openEnchanting", "openMerchant", "closeInventory"),
+        contextual = true,
+    )
+
     // --- assembled views -----------------------------------------------------------------
 
     val manifestRules: List<ManifestRule> = listOf(foliaSupportFlag)
@@ -408,7 +503,11 @@ object RuleCatalog {
 
     val packageRules: List<PackageRule> = listOf(serverInternals)
 
-    val concurrencyRules: List<ConcurrencyRule> = listOf(unsynchronizedStaticCollection)
+    val concurrencyRules: List<ConcurrencyRule> = listOf(
+        unsynchronizedStaticCollection,
+        entitySchedulerLifecycle,
+        unchainedTeleportAsync,
+    )
 
     val callRules: List<CallRule> = listOf(
         bukkitSchedulerGetter, bukkitSchedulerUse, syncTeleport,
@@ -417,6 +516,9 @@ object RuleCatalog {
         blockStateRegionGuarded, entityFamilyRegionGuarded, worldGlobalRegionGuarded,
         chunkAndWorldQueryRegionGuarded,
         primaryThreadCheck,
+        crossRegionPassenger,
+        onlinePlayersDirectMutation,
+        crossRegionInventory,
     )
 
     val all: List<Rule> =

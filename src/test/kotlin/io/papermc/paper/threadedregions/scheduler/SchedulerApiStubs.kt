@@ -28,4 +28,6 @@ interface AsyncScheduler {
 interface EntityScheduler {
     fun run(plugin: Any, task: (ScheduledTask) -> Unit, retired: Runnable?): Boolean
     fun execute(plugin: Any, task: Runnable, retired: Runnable?, delay: Long): Boolean
+    fun runDelayed(plugin: Any, task: (ScheduledTask) -> Unit, retired: Runnable?, delayTicks: Long): ScheduledTask?
+    fun runAtFixedRate(plugin: Any, task: (ScheduledTask) -> Unit, retired: Runnable?, initialDelayTicks: Long, periodTicks: Long): ScheduledTask?
 }

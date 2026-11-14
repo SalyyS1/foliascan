@@ -103,6 +103,14 @@ object FixtureJars {
         foliaSupported = true,
     )
 
+    /** Exercises v0.5.0 cross-region passenger (FS082), lifecycle race (FS083), unchained teleport (FS084), getOnlinePlayers (FS085), and inventory (FS086). */
+    fun v050(): Path = build(
+        jarName = "v050-plugin",
+        packagePath = "fixtures/v050/",
+        main = "fixtures.v050.V050Plugin",
+        foliaSupported = true,
+    )
+
     private fun build(
         jarName: String,
         main: String?,

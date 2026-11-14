@@ -390,4 +390,46 @@ class FixtureScanTest {
         assertTrue(single.evidence.contains("SharedState.unsafeCooldowns"))
         assertTrue(single.context?.contains("RegionScheduler.execute") == true)
     }
+
+    @Test
+    fun `v050 fixture flags FS082 cross-region passenger operations in off-region context`() {
+        val report = scanner.scan(FixtureJars.v050())
+        val fs082 = report.findings.filter { it.ruleId == "FS082" }
+        assertTrue(fs082.isNotEmpty()) { "expected FS082 for vehicle.addPassenger, got: ${report.findings}" }
+        assertTrue(fs082.any { it.evidence.contains("Entity.addPassenger()") })
+        assertTrue(fs082.all { it.contextual })
+    }
+
+    @Test
+    fun `v050 fixture flags FS083 EntityScheduler task with null retired callback`() {
+        val report = scanner.scan(FixtureJars.v050())
+        val fs083 = report.findings.filter { it.ruleId == "FS083" }
+        assertEquals(1, fs083.size) { "expected exactly 1 FS083 finding, got: ${fs083.map { it.evidence }}" }
+        assertTrue(fs083.single().evidence.contains("EntityScheduler.runDelayed() called with null retired callback"))
+    }
+
+    @Test
+    fun `v050 fixture flags FS084 unchained teleportAsync discarding CompletableFuture while sparing chained calls`() {
+        val report = scanner.scan(FixtureJars.v050())
+        val fs084 = report.findings.filter { it.ruleId == "FS084" }
+        assertEquals(1, fs084.size) { "expected exactly 1 FS084 finding for unchained teleportAsync, got: ${fs084.map { it.location.method }}" }
+        assertEquals("unsafeUnchainedTeleport", fs084.single().location.method)
+        assertTrue(fs084.single().evidence.contains("teleportAsync() future discarded"))
+    }
+
+    @Test
+    fun `v050 fixture flags FS085 getOnlinePlayers in off-region context`() {
+        val report = scanner.scan(FixtureJars.v050())
+        val fs085 = report.findings.filter { it.ruleId == "FS085" }
+        assertTrue(fs085.isNotEmpty()) { "expected FS085 for getOnlinePlayers, got: ${report.findings}" }
+        assertTrue(fs085.any { it.evidence.contains("Bukkit.getOnlinePlayers()") })
+    }
+
+    @Test
+    fun `v050 fixture flags FS086 cross-region openInventory in off-region context`() {
+        val report = scanner.scan(FixtureJars.v050())
+        val fs086 = report.findings.filter { it.ruleId == "FS086" }
+        assertTrue(fs086.isNotEmpty()) { "expected FS086 for openInventory, got: ${report.findings}" }
+        assertTrue(fs086.any { it.evidence.contains("Player.openInventory()") })
+    }
 }

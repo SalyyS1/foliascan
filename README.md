@@ -47,7 +47,7 @@ Inspect one `.jar` or drop an entire server `plugins/` directory directly in you
 - Renders a multi-JAR Server Compatibility Matrix (`PASS`, `PATCHED`, `FAIL`) with Markdown and
   JSON export, plus a 1-click synthesized sample plugin `.jar` for instant testing.
 
-For full intra-jar call-graph async taint propagation (`FS050` through `FS065` and `FS081`),
+For full intra-jar call-graph async taint propagation (`FS050` through `FS065`, `FS081` concurrency audit, and `FS082` through `FS086` cross-region and lifecycle rules),
 baseline files, and OASIS SARIF v2.1.0 output (`codeFlows` + regional taint call-chain paths), run
 the CLI or GitHub Action below.
 
@@ -59,14 +59,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.4.0.jar MyPlugin.jar
+java -jar foliascan-0.5.0.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.4.0.jar MyPlugin.jar
+java -jar build/libs/foliascan-0.5.0.jar MyPlugin.jar
 ```
 
 ## Usage

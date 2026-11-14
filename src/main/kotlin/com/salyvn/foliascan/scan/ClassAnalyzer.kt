@@ -142,11 +142,27 @@ object ClassAnalyzer {
         }
 
         override fun visitInsn(opcode: Int) {
-            if (opcode == Opcodes.MONITORENTER) {
-                instructions += Insn(
+            when (opcode) {
+                Opcodes.MONITORENTER -> instructions += Insn(
                     kind = InsnKind.MONITOR,
                     owner = "",
                     name = "monitorenter",
+                    desc = "",
+                    line = currentLine,
+                    opcode = opcode,
+                )
+                Opcodes.ACONST_NULL -> instructions += Insn(
+                    kind = InsnKind.NULL_CONST,
+                    owner = "",
+                    name = "aconst_null",
+                    desc = "",
+                    line = currentLine,
+                    opcode = opcode,
+                )
+                Opcodes.POP, Opcodes.POP2 -> instructions += Insn(
+                    kind = InsnKind.STACK_POP,
+                    owner = "",
+                    name = if (opcode == Opcodes.POP) "pop" else "pop2",
                     desc = "",
                     line = currentLine,
                     opcode = opcode,

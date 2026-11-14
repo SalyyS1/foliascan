@@ -10,6 +10,10 @@ interface Entity {
     fun teleportAsync(location: Location): CompletableFuture<Boolean>
     fun getScheduler(): EntityScheduler
     fun getName(): String
+    fun addPassenger(passenger: Entity): Boolean
+    fun removePassenger(passenger: Entity): Boolean
+    fun eject(): Boolean
+    fun leaveVehicle(): Boolean
 }
 
 interface LivingEntity : Entity {
@@ -19,4 +23,6 @@ interface LivingEntity : Entity {
 interface Player : LivingEntity {
     fun setScoreboard(scoreboard: Scoreboard)
     fun sendMessage(message: String)
+    fun openInventory(inventory: Any): Any?
+    fun closeInventory()
 }

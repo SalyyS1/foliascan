@@ -58,7 +58,7 @@ class FindingCollector(
                             noteInternals(model, method, insn)
                         }
                         InsnKind.TYPE_REF, InsnKind.FIELD -> noteInternals(model, method, insn)
-                        InsnKind.INDY, InsnKind.LDC_STRING, InsnKind.MONITOR -> Unit
+                        InsnKind.INDY, InsnKind.LDC_STRING, InsnKind.MONITOR, InsnKind.NULL_CONST, InsnKind.STACK_POP -> Unit
                     }
                 }
                 if (blamed) {
@@ -69,6 +69,11 @@ class FindingCollector(
                         parallelReason = parallelRegionTasks[methodKey],
                         unsyncFields = unsyncFields,
                         unsyncGetters = unsyncGetters,
+                    )
+                    collectLifecycleAndTeleportRules(
+                        model = model,
+                        method = method,
+                        context = context,
                     )
                 }
             }
@@ -204,7 +209,7 @@ class FindingCollector(
         val name = insn.name
         val isFolia = owner.startsWith(RuleCatalog.FOLIA_SCHEDULER_PACKAGE) ||
             name in FOLIA_GETTERS ||
-            (owner.startsWith("org/bukkit/entity/") && name == "getScheduler")
+            (owner.startsWith("org/bukkit/entity/") && (name == "getScheduler" || name == "teleportAsync"))
         if (isFolia) foliaApiUsages++
     }
 
@@ -464,6 +469,65 @@ class FindingCollector(
                 }
 
                 else -> Unit
+            }
+        }
+    }
+
+    private fun collectLifecycleAndTeleportRules(
+        model: ClassModel,
+        method: MethodModel,
+        context: OffRegionOrigin?,
+    ) {
+        val instructions = method.instructions
+        for (i in instructions.indices) {
+            val insn = instructions[i]
+
+            // FS083: EntityScheduler lifecycle race when submitted with null retired callback on delayed/repeating task
+            if (insn.kind == InsnKind.CALL &&
+                insn.owner == "io/papermc/paper/threadedregions/scheduler/EntityScheduler" &&
+                (insn.name == "runDelayed" || insn.name == "runAtFixedRate")
+            ) {
+                val rule = RuleCatalog.entitySchedulerLifecycle
+                if (enabled(rule)) {
+                    val hasNullRetired = (i > 0 && instructions[i - 1].kind == InsnKind.NULL_CONST) ||
+                        (i > 1 && instructions[i - 2].kind == InsnKind.NULL_CONST) ||
+                        (i > 2 && instructions[i - 3].kind == InsnKind.NULL_CONST)
+                    if (hasNullRetired) {
+                        out += finding(
+                            rule = rule,
+                            evidence = "EntityScheduler.${insn.name}() called with null retired callback",
+                            why = rule.why,
+                            location = location(model, method, insn),
+                            contextual = context != null,
+                            context = context?.let { "entity lifecycle risk: ${it.reason}" },
+                        )
+                    }
+                }
+            }
+
+            // FS084: teleportAsync with discarded CompletableFuture followed by immediate post-teleport entity call
+            if (insn.kind == InsnKind.CALL &&
+                insn.name == "teleportAsync" &&
+                insn.owner.startsWith("org/bukkit/entity/")
+            ) {
+                val rule = RuleCatalog.unchainedTeleportAsync
+                if (enabled(rule)) {
+                    val discarded = (i + 1 < instructions.size && instructions[i + 1].kind == InsnKind.STACK_POP)
+                    val hasSubsequentEntityCall = instructions.subList(i + 1, instructions.size).any {
+                        it.kind == InsnKind.CALL && it.owner.startsWith("org/bukkit/entity/") &&
+                            it.name !in setOf("getScheduler", "teleportAsync", "values", "valueOf", "name", "ordinal")
+                    }
+                    if (discarded && hasSubsequentEntityCall) {
+                        out += finding(
+                            rule = rule,
+                            evidence = "${insn.owner.substringAfterLast('/')}.teleportAsync() future discarded before subsequent entity access",
+                            why = rule.why,
+                            location = location(model, method, insn),
+                            contextual = context != null,
+                            context = context?.let { "asynchronous teleport risk: ${it.reason}" },
+                        )
+                    }
+                }
             }
         }
     }

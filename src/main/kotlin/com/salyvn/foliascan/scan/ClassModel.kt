@@ -28,6 +28,12 @@ enum class InsnKind {
 
     /** monitorenter instruction indicating synchronized block protection. */
     MONITOR,
+
+    /** aconst_null instruction indicating a null parameter or reference. */
+    NULL_CONST,
+
+    /** pop / pop2 instruction discarding a stack operand (e.g. unhandled return value). */
+    STACK_POP,
 }
 
 /**
