@@ -313,4 +313,81 @@ class FixtureScanTest {
             "fingerprint leaked a source line and would break on unrelated edits",
         )
     }
+
+    @Test
+    fun `neutral Class_forName RegionizedServer probe downgrades guarded legacy branch`() {
+        val report = scanner.scan(FixtureJars.v040())
+        val guarded = report.findings.filter { it.location.className.endsWith("NeutralGuardedScheduler") }
+        assertTrue(guarded.isNotEmpty()) { "expected findings in NeutralGuardedScheduler, got ${report.findings}" }
+        assertTrue(guarded.all { it.severity == Severity.INFO }) {
+            "Class.forName RegionizedServer guard was not recognised: " +
+                guarded.map { "${it.ruleId}=${it.severity} (${it.context})" }
+        }
+        assertTrue(guarded.any { it.context?.contains("RegionizedServer") == true }) {
+            "Class.forName target was not cited in guard context: ${guarded.map { it.context }}"
+        }
+    }
+
+    @Test
+    fun `ProtocolLib and Netty channel handlers are seeded as off-region entry points`() {
+        val report = scanner.scan(FixtureJars.v040())
+        val packetHits = report.findings.filter { it.location.className.endsWith("MovementPacketHook") }
+        assertTrue(packetHits.any { it.ruleId == "FS063" }) {
+            "ProtocolLib onPacketReceiving entity call was not flagged: $packetHits"
+        }
+        assertTrue(packetHits.all { it.context?.contains("ProtocolLib packet listener") == true })
+
+        val nettyHits = report.findings.filter { it.location.className.endsWith("RawNettyDuplexHook") }
+        assertTrue(nettyHits.any { it.ruleId == "FS065" }) {
+            "Netty channelRead World#getNearbyEntities was not flagged as FS065: $nettyHits"
+        }
+        assertTrue(nettyHits.all { it.context?.contains("Netty channel handler") == true })
+    }
+
+    @Test
+    fun `CompletableFuture thenAccept is tainted after supplyAsync but safe after teleportAsync`() {
+        val report = scanner.scan(FixtureJars.v040())
+        val v040Hits = report.findings.filter { it.location.className.endsWith("V040Plugin") }
+
+        assertTrue(
+            v040Hits.any {
+                it.ruleId == "FS063" &&
+                    it.context?.contains("CompletableFuture.thenAccept chained onto supplyAsync") == true
+            },
+        ) {
+            "thenAccept chained onto supplyAsync was not tainted: " +
+                v040Hits.map { "${it.ruleId}@${it.location.method}: ${it.context}" }
+        }
+
+        assertFalse(
+            v040Hits.any { it.context?.contains("safeTeleportAsyncChain") == true },
+        ) {
+            "teleportAsync(...).thenAccept(...) falsely inherited off-region taint: $v040Hits"
+        }
+    }
+
+    @Test
+    fun `FS065 flags Chunk entity inspection from AsyncScheduler`() {
+        val report = scanner.scan(FixtureJars.v040())
+        assertTrue(
+            report.findings.any {
+                it.ruleId == "FS065" && it.evidence.contains("Chunk.getEntities()")
+            },
+        ) {
+            "Chunk#getEntities inside AsyncScheduler was not flagged as FS065: ${report.findings}"
+        }
+    }
+
+    @Test
+    fun `FS081 flags unsynchronized static HashMap mutation while sparing ConcurrentHashMap and synchronized blocks`() {
+        val report = scanner.scan(FixtureJars.v040())
+        val fs081 = report.findings.filter { it.ruleId == "FS081" }
+        assertEquals(1, fs081.size) {
+            "expected exactly 1 FS081 finding (unsafeCooldowns in RegionScheduler), got: " +
+                fs081.map { "${it.evidence} @ ${it.location.method} (${it.context})" }
+        }
+        val single = fs081.single()
+        assertTrue(single.evidence.contains("SharedState.unsafeCooldowns"))
+        assertTrue(single.context?.contains("RegionScheduler.execute") == true)
+    }
 }

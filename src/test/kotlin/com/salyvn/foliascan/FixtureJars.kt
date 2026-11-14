@@ -95,6 +95,14 @@ object FixtureJars {
         foliaSupported = true,
     )
 
+    /** Exercises v0.4.0 Class.forName guards, Netty/packet hooks, CF chains, FS065, and FS081. */
+    fun v040(): Path = build(
+        jarName = "v040-plugin",
+        packagePath = "fixtures/v040/",
+        main = "fixtures.v040.V040Plugin",
+        foliaSupported = true,
+    )
+
     private fun build(
         jarName: String,
         main: String?,

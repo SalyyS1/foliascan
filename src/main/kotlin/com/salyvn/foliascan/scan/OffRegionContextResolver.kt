@@ -88,7 +88,47 @@ object OffRegionContextResolver {
         "io/papermc/paper/event/player/AsyncChatEvent",
         "io/papermc/paper/event/player/AsyncChatDecorateEvent",
         "io/papermc/paper/event/player/AsyncChatCommandDecorateEvent",
+        "io/papermc/paper/event/connection/configuration/AsyncPlayerConnectionConfigureEvent",
         "com/destroystokyo/paper/event/profile/PreLookupProfileEvent",
+        "com/destroystokyo/paper/event/player/PlayerConnectionValidateLoginEvent",
+    )
+
+    private val PROTOCOLLIB_SUPERTYPES = setOf(
+        "com/comphenix/protocol/events/PacketAdapter",
+        "com/comphenix/protocol/events/PacketListener",
+    )
+    private val PROTOCOLLIB_METHODS = setOf("onPacketReceiving", "onPacketSending")
+
+    private val PACKETEVENTS_SUPERTYPES = setOf(
+        "com/github/retrooper/packetevents/event/PacketListener",
+        "com/github/retrooper/packetevents/event/PacketListenerAbstract",
+        "com/github/retrooper/packetevents/event/SimplePacketListenerAbstract",
+        "com/github/retrooper/packetevents/event/PacketListenerCommon",
+    )
+    private val PACKETEVENTS_METHODS = setOf("onPacketReceive", "onPacketSend")
+
+    private val NETTY_HANDLER_SUPERTYPES = setOf(
+        "io/netty/channel/ChannelInboundHandlerAdapter",
+        "io/netty/channel/SimpleChannelInboundHandler",
+        "io/netty/channel/ChannelDuplexHandler",
+        "io/netty/channel/ChannelInboundHandler",
+    )
+    private val NETTY_HANDLER_METHODS = setOf("channelRead", "channelRead0", "userEventTriggered")
+
+    private val TIMER_SUBMITTERS = setOf("schedule", "scheduleAtFixedRate")
+
+    private val CF_TYPES = setOf(
+        "java/util/concurrent/CompletableFuture",
+        "java/util/concurrent/CompletionStage",
+    )
+    private val CF_ASYNC_STAGE_CREATORS = setOf(
+        "supplyAsync", "runAsync", "thenRunAsync", "thenApplyAsync",
+        "thenAcceptAsync", "thenComposeAsync", "whenCompleteAsync", "handleAsync",
+        "thenCombineAsync", "exceptionallyAsync",
+    )
+    private val CF_SYNC_CONTINUATIONS = setOf(
+        "thenAccept", "thenApply", "thenRun", "thenCompose",
+        "whenComplete", "handle", "exceptionally",
     )
 
     private val RUN_METHOD = MethodId("run", "()V")
@@ -101,7 +141,9 @@ object OffRegionContextResolver {
             for (method in model.methods) {
                 val here = MethodKey(model.internalName, method.id)
                 val firstLine = method.instructions.firstNotNullOfOrNull { it.line }
-                asyncEventReason(method.id.desc)?.let { reason ->
+                val entryReason = asyncEventReason(method.id.desc)
+                    ?: packetOrNettyReason(model, method, jar)
+                entryReason?.let { reason ->
                     seeds.putIfAbsent(
                         here,
                         OffRegionOrigin(
@@ -130,7 +172,9 @@ object OffRegionContextResolver {
                             )
                         }
                     }
-                    val reason = submitterReason(insn) ?: return@forEachIndexed
+                    val reason = submitterReason(insn)
+                        ?: chainedAsyncStageReason(method, index)
+                        ?: return@forEachIndexed
                     taskHandedTo(method, index, jar)?.let { target ->
                         seeds.putIfAbsent(
                             target,
@@ -171,6 +215,26 @@ object OffRegionContextResolver {
     }
 
     /**
+     * True when [method] overrides a ProtocolLib, PacketEvents, or raw Netty channel callback,
+     * all of which execute on Netty I/O threads outside every Folia region.
+     */
+    private fun packetOrNettyReason(model: ClassModel, method: MethodModel, jar: JarClasses): String? {
+        val name = method.id.name
+        return when {
+            name in PROTOCOLLIB_METHODS && jar.inheritsAny(model.internalName, PROTOCOLLIB_SUPERTYPES) ->
+                "ProtocolLib packet listener ($name on Netty I/O thread)"
+
+            name in PACKETEVENTS_METHODS && jar.inheritsAny(model.internalName, PACKETEVENTS_SUPERTYPES) ->
+                "PacketEvents packet listener ($name on Netty I/O thread)"
+
+            name in NETTY_HANDLER_METHODS && jar.inheritsAny(model.internalName, NETTY_HANDLER_SUPERTYPES) ->
+                "Netty channel handler ($name on Netty I/O thread)"
+
+            else -> null
+        }
+    }
+
+    /**
      * True when this instruction hands a task back onto a region or entity scheduler.
      * A callback scheduled onto a region thread from inside an async task is re-entering
      * region ownership and must not inherit off-region taint from its enclosing method.
@@ -203,6 +267,9 @@ object OffRegionContextResolver {
 
             owner == "java/lang/Thread" && name == "<init>" -> "handed to a new Thread"
 
+            owner == "java/util/Timer" && name in TIMER_SUBMITTERS ->
+                "scheduled on Timer.$name"
+
             name in BUKKIT_ASYNC_SUBMITTERS -> "submitted via $name"
 
             (owner == PAPER_ASYNC_SCHEDULER || owner.endsWith("/AsyncScheduler")) &&
@@ -213,13 +280,50 @@ object OffRegionContextResolver {
     }
 
     /**
+     * Detects non-async CompletableFuture continuations (`thenAccept`, `thenApply`, `thenRun`,
+     * etc.) chained onto an async CompletableFuture stage (`supplyAsync`, `runAsync`, `*Async`).
+     * Continuations chained onto Folia-safe futures such as `Entity#teleportAsync` or
+     * `World#getChunkAtAsync` complete on the owning region thread and are deliberately excluded.
+     */
+    private fun chainedAsyncStageReason(method: MethodModel, callIndex: Int): String? {
+        val insn = method.instructions[callIndex]
+        if (insn.kind != InsnKind.CALL || insn.owner !in CF_TYPES || insn.name !in CF_SYNC_CONTINUATIONS) {
+            return null
+        }
+        for (i in callIndex - 1 downTo 0) {
+            val prev = method.instructions[i]
+            if (prev.kind != InsnKind.CALL || prev.name == "<init>") continue
+            val returnsStage = prev.desc.endsWith(")Ljava/util/concurrent/CompletableFuture;") ||
+                prev.desc.endsWith(")Ljava/util/concurrent/CompletionStage;")
+            if (!returnsStage) continue
+            if (prev.owner in CF_TYPES && prev.name in CF_ASYNC_STAGE_CREATORS) {
+                return "handed to CompletableFuture.${insn.name} chained onto ${prev.name}"
+            }
+            if (prev.owner in CF_TYPES && prev.name in CF_SYNC_CONTINUATIONS) {
+                continue
+            }
+            return null
+        }
+        return null
+    }
+
+    /**
      * Finds the task body passed to the submitter at [callIndex]: the closest preceding
-     * lambda, or the closest preceding `new` of an in-jar class that has a `run()` method.
+     * lambda (unwrapping Kotlin 2.x two-stage FunctionN -> Java SAM `invokedynamic` bridges),
+     * or the closest preceding `new` of an in-jar class that has a `run()` method.
      */
     private fun taskHandedTo(method: MethodModel, callIndex: Int, jar: JarClasses): MethodKey? {
         for (i in callIndex - 1 downTo 0) {
             val prev = method.instructions[i]
             if (prev.kind == InsnKind.INDY && prev.lambdaTarget != null) {
+                if (prev.desc.startsWith("(Lkotlin/jvm/functions/Function") && i > 0) {
+                    val inner = method.instructions[i - 1]
+                    if (inner.kind == InsnKind.INDY && inner.lambdaTarget != null &&
+                        inner.desc.contains(")Lkotlin/jvm/functions/Function")
+                    ) {
+                        return inner.lambdaTarget
+                    }
+                }
                 return prev.lambdaTarget
             }
             if (prev.kind == InsnKind.TYPE_REF && prev.name == "new") {

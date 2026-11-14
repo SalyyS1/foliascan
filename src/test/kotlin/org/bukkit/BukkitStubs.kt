@@ -12,6 +12,11 @@ import io.papermc.paper.threadedregions.scheduler.RegionScheduler
 
 class Location(val world: World?, val x: Double, val y: Double, val z: Double)
 
+interface Chunk {
+    fun getEntities(): Array<Any>
+    fun load(): Boolean
+}
+
 interface World {
     fun getChunkAt(x: Int, z: Int): Any?
     fun loadChunk(x: Int, z: Int): Boolean
@@ -21,6 +26,7 @@ interface World {
     fun setStorm(hasStorm: Boolean)
     fun getTickableTileEntityCount(): Int
     fun getHighestBlockYAt(x: Int, z: Int): Int
+    fun getNearbyEntities(location: Location, x: Double, y: Double, z: Double): Collection<Any>
 }
 
 interface Server {

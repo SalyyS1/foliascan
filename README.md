@@ -47,9 +47,9 @@ Inspect one `.jar` or drop an entire server `plugins/` directory directly in you
 - Renders a multi-JAR Server Compatibility Matrix (`PASS`, `PATCHED`, `FAIL`) with Markdown and
   JSON export, plus a 1-click synthesized sample plugin `.jar` for instant testing.
 
-For full intra-jar call-graph async taint propagation (`FS050` through `FS064`), baseline files,
-and OASIS SARIF v2.1.0 output (`codeFlows` + regional taint call-chain paths), run the CLI or
-GitHub Action below.
+For full intra-jar call-graph async taint propagation (`FS050` through `FS065` and `FS081`),
+baseline files, and OASIS SARIF v2.1.0 output (`codeFlows` + regional taint call-chain paths), run
+the CLI or GitHub Action below.
 
 ## Install
 
@@ -59,14 +59,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.3.0.jar MyPlugin.jar
+java -jar foliascan-0.4.0.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.3.0.jar MyPlugin.jar
+java -jar build/libs/foliascan-0.4.0.jar MyPlugin.jar
 ```
 
 ## Usage
@@ -178,8 +178,10 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | FS062 | warning | region-guarded `BlockState` calls (`update`, `getDrops`, `randomTick`) |
 | FS063 | warning | any `org.bukkit.entity` call from an off-region context |
 | FS064 | warning | global-region-guarded `World` calls (`setTime`, `setStorm`, `setGameRule`, `setChunkForceLoaded`, `setMetadata`, ...) |
+| FS065 | warning | region-guarded `Chunk` (`getEntities`, `getTileEntities`, `getBlock`, `load`) and `World` entity-query / rayTrace / spawn calls |
 | FS070 | warning | direct `net.minecraft` / `org.bukkit.craftbukkit` access, one finding per class |
 | FS080 | info | `isPrimaryThread()` used as a safety gate |
+| FS081 | warning | unsynchronized static `HashMap` / `ArrayList` / `HashSet` mutated inside concurrent Folia region or async tasks |
 
 Severities mean specific things:
 
@@ -206,11 +208,14 @@ finding, so the finding carries the distinct type count instead.
    includes packages matching the descriptor's plugin name. The report prints the roots it chose
    and how many of the jar's classes they cover.
 3. Find off-region entry points: a lambda or `Runnable` handed to an executor, a
-   `CompletableFuture` async stage, a raw `Thread`, `runTask*Asynchronously`, Paper's
+   `CompletableFuture` async stage (plus non-async `thenAccept` / `thenApply` / `thenRun`
+   continuations chained onto `supplyAsync` or `runAsync`, while sparing Folia-safe futures like
+   `Entity#teleportAsync`), a raw `Thread`, `java.util.Timer`, `runTask*Asynchronously`, Paper's
    `AsyncScheduler`, a Bukkit/Paper async event handler (`AsyncPlayerChatEvent`,
-   `AsyncChatEvent`, `AsyncPlayerPreLoginEvent`), or a `GlobalRegionScheduler` callback
-   (`region={null}`, which owns global server/world state `FS050`/`FS064` but owns no chunks,
-   blocks, or entities `FS060` through `FS063`).
+   `AsyncChatEvent`, `AsyncPlayerPreLoginEvent`, `AsyncPlayerConnectionConfigureEvent`), a
+   ProtocolLib / PacketEvents / Netty channel packet callback running on Netty I/O threads, or a
+   `GlobalRegionScheduler` callback (`region={null}`, which owns global server/world state
+   `FS050`/`FS064` but owns no chunks, blocks, or entities `FS060` through `FS063` and `FS065`).
 4. Propagate that breadth-first across in-jar call edges, recording every call-site hop and
    bytecode line number so helpers called from async tasks carry the complete regional taint call
    chain (emitted in human messages and SARIF `codeFlows` / `threadFlows`). Callbacks inside an
@@ -239,7 +244,10 @@ val scheduler = if (IS_FOLIA) PaperScheduler() else BukkitScheduler()
 
 A method qualifies when it both tests for Folia *and* contains a region-scheduler call; the second
 half is what stops this from muting everything, since unconditional legacy code has no region call
-to pair with the test. A class qualifies when every `new` of it sits in a method that tests for
+to pair with the test. FoliaScan recognises `folia` flags, `ServerBuildInfo#isBrandCompatible`, and
+PaperMC's canonical `Class.forName("io.papermc.paper.threadedregions.RegionizedServer")` probe even
+when stored in a neutrally named static boolean (`HAS_REGIONS`) or helper (`supportsRegions()`). A
+class qualifies when every `new` of it sits in a method that tests for
 Folia - and the test has to be independent of the class itself, or anything named `FoliaScheduler`
 would vacuously guard itself. Lambdas created inside a guarded method inherit the guard, because a
 task built in the legacy branch compiles into its own synthetic method.

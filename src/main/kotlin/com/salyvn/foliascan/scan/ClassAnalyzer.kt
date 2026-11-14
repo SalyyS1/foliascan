@@ -2,6 +2,7 @@ package com.salyvn.foliascan.scan
 
 import org.objectweb.asm.ClassReader
 import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.FieldVisitor
 import org.objectweb.asm.Handle
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
@@ -28,6 +29,7 @@ object ClassAnalyzer {
         private var interfaceNames: List<String> = emptyList()
         private var sourceFile: String? = null
         private val methods = mutableListOf<MethodModel>()
+        private val fields = mutableListOf<FieldModel>()
 
         override fun visit(
             version: Int,
@@ -46,6 +48,17 @@ object ClassAnalyzer {
             sourceFile = source
         }
 
+        override fun visitField(
+            access: Int,
+            name: String,
+            descriptor: String,
+            signature: String?,
+            value: Any?,
+        ): FieldVisitor? {
+            fields += FieldModel(name, descriptor, access)
+            return null
+        }
+
         override fun visitMethod(
             access: Int,
             name: String,
@@ -60,6 +73,7 @@ object ClassAnalyzer {
             interfaces = interfaceNames,
             sourceFile = sourceFile,
             methods = methods.toList(),
+            fields = fields.toList(),
         )
     }
 
@@ -83,7 +97,7 @@ object ClassAnalyzer {
             descriptor: String,
             isInterface: Boolean,
         ) {
-            instructions += Insn(InsnKind.CALL, owner, name, descriptor, currentLine)
+            instructions += Insn(InsnKind.CALL, owner, name, descriptor, currentLine, opcode = opcode)
         }
 
         override fun visitInvokeDynamicInsn(
@@ -107,11 +121,37 @@ object ClassAnalyzer {
         }
 
         override fun visitTypeInsn(opcode: Int, type: String) {
-            instructions += Insn(InsnKind.TYPE_REF, type, opcodeName(opcode), "", currentLine)
+            instructions += Insn(InsnKind.TYPE_REF, type, opcodeName(opcode), "", currentLine, opcode = opcode)
         }
 
         override fun visitFieldInsn(opcode: Int, owner: String, name: String, descriptor: String) {
-            instructions += Insn(InsnKind.FIELD, owner, name, descriptor, currentLine)
+            instructions += Insn(InsnKind.FIELD, owner, name, descriptor, currentLine, opcode = opcode)
+        }
+
+        override fun visitLdcInsn(value: Any?) {
+            if (value is String) {
+                instructions += Insn(
+                    kind = InsnKind.LDC_STRING,
+                    owner = "java/lang/String",
+                    name = value,
+                    desc = "Ljava/lang/String;",
+                    line = currentLine,
+                    opcode = Opcodes.LDC,
+                )
+            }
+        }
+
+        override fun visitInsn(opcode: Int) {
+            if (opcode == Opcodes.MONITORENTER) {
+                instructions += Insn(
+                    kind = InsnKind.MONITOR,
+                    owner = "",
+                    name = "monitorenter",
+                    desc = "",
+                    line = currentLine,
+                    opcode = opcode,
+                )
+            }
         }
 
         override fun visitEnd() {

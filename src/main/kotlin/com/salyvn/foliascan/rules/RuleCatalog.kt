@@ -325,6 +325,33 @@ object RuleCatalog {
         contextual = true,
     )
 
+    private val chunkAndWorldQueryRegionGuarded = CallRule(
+        id = "FS065",
+        severity = Severity.WARNING,
+        title = "Chunk and world entity-query or spawn calls are region-guarded",
+        why = "Folia wraps CraftChunk entity/tile/block accessors and CraftWorld entity queries, " +
+            "ray traces, item drops, and entity spawns in TickThread.ensureTickThread. Calling " +
+            "them from an async task, packet listener, or GlobalRegionScheduler callback throws " +
+            "IllegalStateException off-region.",
+        fix = REGION_FIX,
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftChunk#getEntities, #getTileEntities, #getBlock, #load, #unload; " +
+                "CraftWorld#getEntities, #getLivingEntities, #getNearbyEntities, #rayTrace*, " +
+                "#spawnEntity, #spawn, #dropItem*, #strikeLightning*",
+        ),
+        owners = setOf("org/bukkit/Chunk", "org/bukkit/World"),
+        methods = setOf(
+            "addPluginChunkTicket", "dropItem", "dropItemNaturally", "getBlock",
+            "getChunkSnapshot", "getEntities", "getEntitiesByClass", "getEntitiesByClasses",
+            "getLivingEntities", "getNearbyEntities", "getPlayers", "getTileEntities",
+            "isEntitiesLoaded", "load", "rayTrace", "rayTraceBlocks", "rayTraceEntities",
+            "removePluginChunkTicket", "spawn", "spawnEntity", "strikeLightning",
+            "strikeLightningEffect", "unload",
+        ),
+        contextual = true,
+    )
+
     private val serverInternals = PackageRule(
         id = "FS070",
         severity = Severity.WARNING,
@@ -353,6 +380,24 @@ object RuleCatalog {
         methods = setOf("isPrimaryThread"),
     )
 
+    val unsynchronizedStaticCollection = ConcurrencyRule(
+        id = "FS081",
+        severity = Severity.WARNING,
+        title = "Unsynchronized static collection mutated from concurrent Folia tasks",
+        why = "On plain Paper, main-thread tasks never ran in parallel so a static HashMap, " +
+            "ArrayList, or HashSet appeared safe. Under Folia, RegionScheduler, EntityScheduler, " +
+            "AsyncScheduler, and Netty callbacks execute concurrently across worker threads; " +
+            "mutating a non-thread-safe static collection without synchronization risks " +
+            "ConcurrentModificationException, lost writes, or corrupted bucket chains.",
+        fix = "Replace HashMap / LinkedHashMap with ConcurrentHashMap, HashSet with " +
+            "ConcurrentHashMap.newKeySet(), and ArrayList with CopyOnWriteArrayList or guard " +
+            "every read and mutation behind an explicit lock.",
+        provenance = Provenance(
+            PATCH_SCHED_API,
+            "RegionScheduler, EntityScheduler, and AsyncScheduler execute concurrently across threads",
+        ),
+    )
+
     // --- assembled views -----------------------------------------------------------------
 
     val manifestRules: List<ManifestRule> = listOf(foliaSupportFlag)
@@ -363,15 +408,19 @@ object RuleCatalog {
 
     val packageRules: List<PackageRule> = listOf(serverInternals)
 
+    val concurrencyRules: List<ConcurrencyRule> = listOf(unsynchronizedStaticCollection)
+
     val callRules: List<CallRule> = listOf(
         bukkitSchedulerGetter, bukkitSchedulerUse, syncTeleport,
         scoreboardRegistration, scoreboardManager, worldLifecycle, tickableTileEntityCount,
         serverMetrics, dispatchCommand, worldRegionGuarded, blockRegionGuarded,
         blockStateRegionGuarded, entityFamilyRegionGuarded, worldGlobalRegionGuarded,
+        chunkAndWorldQueryRegionGuarded,
         primaryThreadCheck,
     )
 
-    val all: List<Rule> = manifestRules + artifactRules + supertypeRules + packageRules + callRules
+    val all: List<Rule> =
+        manifestRules + artifactRules + supertypeRules + packageRules + callRules + concurrencyRules
 
     fun byId(id: String): Rule? = all.firstOrNull { it.id.equals(id, ignoreCase = true) }
 }

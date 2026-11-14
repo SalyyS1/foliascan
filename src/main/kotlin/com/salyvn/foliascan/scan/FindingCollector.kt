@@ -8,6 +8,7 @@ import com.salyvn.foliascan.rules.PackageRule
 import com.salyvn.foliascan.rules.Rule
 import com.salyvn.foliascan.rules.RuleCatalog
 import com.salyvn.foliascan.rules.SupertypeRule
+import org.objectweb.asm.Opcodes
 
 /** Applies the rule catalog to one already-parsed jar. */
 class FindingCollector(
@@ -38,11 +39,14 @@ class FindingCollector(
     fun collect(): List<Finding> {
         collectManifest()
         collectPatcher()
+        val (unsyncFields, unsyncGetters) = discoverUnsyncStaticCollections()
+        val parallelRegionTasks = discoverParallelRegionTasks()
         for (model in jar.classes.values) {
             val blamed = model.internalName in reportable
             if (blamed) collectSupertypes(model)
             for (method in model.methods) {
-                val context = offRegion.originOf(MethodKey(model.internalName, method.id))
+                val methodKey = MethodKey(model.internalName, method.id)
+                val context = offRegion.originOf(methodKey)
                 for (insn in method.instructions) {
                     // Counted across the whole jar: a relocated Folia shim is still evidence
                     // that the artifact does the region-aware thing somewhere.
@@ -54,8 +58,18 @@ class FindingCollector(
                             noteInternals(model, method, insn)
                         }
                         InsnKind.TYPE_REF, InsnKind.FIELD -> noteInternals(model, method, insn)
-                        InsnKind.INDY -> Unit
+                        InsnKind.INDY, InsnKind.LDC_STRING, InsnKind.MONITOR -> Unit
                     }
+                }
+                if (blamed) {
+                    collectUnsyncStaticMutations(
+                        model = model,
+                        method = method,
+                        context = context,
+                        parallelReason = parallelRegionTasks[methodKey],
+                        unsyncFields = unsyncFields,
+                        unsyncGetters = unsyncGetters,
+                    )
                 }
             }
         }
@@ -262,6 +276,198 @@ class FindingCollector(
                 .thenBy { it.location.line ?: 0 },
         )
 
+    private fun discoverUnsyncStaticCollections(): Pair<
+        Map<Pair<String, String>, String>,
+        Map<Pair<String, String>, Pair<Pair<String, String>, String>>,
+        > {
+        val fields = mutableMapOf<Pair<String, String>, String>()
+        for (model in jar.classes.values) {
+            val clinit = model.methods.firstOrNull { it.id.name == "<clinit>" } ?: continue
+            var lastAlloc: String? = null
+            for (insn in clinit.instructions) {
+                when (insn.kind) {
+                    InsnKind.TYPE_REF -> if (insn.name == "new") {
+                        lastAlloc = when {
+                            insn.owner in UNSYNC_COLLECTION_TYPES -> insn.owner.substringAfterLast('/')
+                            insn.owner.startsWith("java/util/concurrent/") -> null
+                            else -> lastAlloc
+                        }
+                    }
+
+                    InsnKind.CALL -> when {
+                        insn.owner in KOTLIN_COLLECTION_FACTORIES && insn.name in KOTLIN_MUTABLE_FACTORIES ->
+                            lastAlloc = insn.name
+
+                        insn.owner == "java/util/Collections" && (
+                            insn.name.startsWith("synchronized") ||
+                                insn.name.startsWith("unmodifiable") ||
+                                insn.name.startsWith("empty") ||
+                                insn.name.startsWith("singleton")
+                            ) -> lastAlloc = null
+
+                        insn.owner.startsWith("java/util/concurrent/") -> lastAlloc = null
+                    }
+
+                    InsnKind.FIELD -> if (insn.opcode == Opcodes.PUTSTATIC) {
+                        if (lastAlloc != null) {
+                            fields[insn.owner to insn.name] = lastAlloc
+                        }
+                        lastAlloc = null
+                    }
+
+                    else -> Unit
+                }
+            }
+        }
+
+        val getters = mutableMapOf<Pair<String, String>, Pair<Pair<String, String>, String>>()
+        for (model in jar.classes.values) {
+            for (method in model.methods) {
+                if (!method.id.desc.startsWith("()")) continue
+                if ((method.access and Opcodes.ACC_SYNCHRONIZED) != 0) continue
+                if (method.instructions.any { it.kind == InsnKind.MONITOR }) continue
+                val staticReads = method.instructions.filter {
+                    it.kind == InsnKind.FIELD && it.opcode == Opcodes.GETSTATIC && (it.owner to it.name) in fields
+                }
+                if (staticReads.size == 1) {
+                    val read = staticReads.single()
+                    val fKey = read.owner to read.name
+                    fields[fKey]?.let { kind ->
+                        getters[model.internalName to method.id.name] = fKey to kind
+                    }
+                }
+            }
+        }
+        return fields to getters
+    }
+
+    private fun discoverParallelRegionTasks(): Map<MethodKey, String> {
+        val out = mutableMapOf<MethodKey, String>()
+        val queue = ArrayDeque<MethodKey>()
+        for (model in jar.classes.values) {
+            for (method in model.methods) {
+                method.instructions.forEachIndexed { idx, insn ->
+                    if (insn.kind == InsnKind.CALL && insn.name in PARALLEL_REGION_SUBMITTERS &&
+                        PARALLEL_REGION_OWNERS.any { insn.owner.endsWith(it) }
+                    ) {
+                        for (j in idx - 1 downTo 0) {
+                            val prev = method.instructions[j]
+                            if (prev.kind == InsnKind.INDY && prev.lambdaTarget != null) {
+                                val resolvedTarget = if (
+                                    prev.desc.startsWith("(Lkotlin/jvm/functions/Function") && j > 0 &&
+                                    method.instructions[j - 1].kind == InsnKind.INDY &&
+                                    method.instructions[j - 1].lambdaTarget != null &&
+                                    method.instructions[j - 1].desc.contains(")Lkotlin/jvm/functions/Function")
+                                ) {
+                                    method.instructions[j - 1].lambdaTarget!!
+                                } else {
+                                    prev.lambdaTarget
+                                }
+                                val reason = "submitted via ${insn.owner.substringAfterLast('/')}.${insn.name}"
+                                if (out.putIfAbsent(resolvedTarget, reason) == null) {
+                                    queue.addLast(resolvedTarget)
+                                }
+                                break
+                            }
+                            if (prev.kind == InsnKind.CALL && prev.name != "<init>") break
+                        }
+                    }
+                }
+            }
+        }
+        while (queue.isNotEmpty()) {
+            val cur = queue.removeFirst()
+            val reason = out[cur] ?: continue
+            val body = jar.get(cur.owner)?.method(cur.method) ?: continue
+            for (insn in body.instructions) {
+                val next = when {
+                    insn.kind == InsnKind.CALL && jar.contains(insn.owner) ->
+                        MethodKey(insn.owner, MethodId(insn.name, insn.desc))
+                    insn.kind == InsnKind.INDY && insn.lambdaTarget != null &&
+                        jar.contains(insn.lambdaTarget.owner) -> insn.lambdaTarget
+                    else -> null
+                } ?: continue
+                if (out.putIfAbsent(next, reason) == null) queue.addLast(next)
+            }
+        }
+        return out
+    }
+
+    private fun collectUnsyncStaticMutations(
+        model: ClassModel,
+        method: MethodModel,
+        context: OffRegionOrigin?,
+        parallelReason: String?,
+        unsyncFields: Map<Pair<String, String>, String>,
+        unsyncGetters: Map<Pair<String, String>, Pair<Pair<String, String>, String>>,
+    ) {
+        val rule = RuleCatalog.unsynchronizedStaticCollection
+        if (!enabled(rule) || unsyncFields.isEmpty()) return
+        if ((method.access and Opcodes.ACC_SYNCHRONIZED) != 0) return
+        if (method.instructions.any { it.kind == InsnKind.MONITOR }) return
+
+        val taskReason = context?.reason ?: parallelReason ?: return
+        var pending: Pair<Pair<String, String>, String>? = null
+
+        for (insn in method.instructions) {
+            when (insn.kind) {
+                InsnKind.FIELD -> if (insn.opcode == Opcodes.GETSTATIC) {
+                    val fKey = insn.owner to insn.name
+                    val alloc = unsyncFields[fKey]
+                    if (alloc != null) {
+                        pending = fKey to alloc
+                    } else if (insn.desc.startsWith("Ljava/util/concurrent/")) {
+                        pending = null
+                    }
+                }
+
+                InsnKind.CALL -> {
+                    val getterHit = unsyncGetters[insn.owner to insn.name]
+                    if (getterHit != null) {
+                        pending = getterHit
+                    } else if (pending != null &&
+                        insn.owner in MUTABLE_COLLECTION_OWNERS &&
+                        insn.name in COLLECTION_MUTATORS
+                    ) {
+                        val (fieldKey, allocKind) = pending
+                        val sinkHops = context?.let { origin ->
+                            if (origin.hops.isNotEmpty()) {
+                                val last = origin.hops.last()
+                                origin.hops.dropLast(1) + last.copy(line = insn.line ?: last.line)
+                            } else {
+                                listOf(TaintHop(MethodKey(model.internalName, method.id), insn.line, model.sourceFile))
+                            }
+                        }.orEmpty()
+                        val chainLocations = sinkHops.map { hop ->
+                            CodeLocation(
+                                jar = jarName,
+                                className = hop.method.owner.replace('/', '.'),
+                                method = hop.method.method.name,
+                                line = hop.line,
+                                sourceFile = hop.sourceFile,
+                            )
+                        }
+                        out += finding(
+                            rule = rule,
+                            evidence = "${fieldKey.first.substringAfterLast('/')}.${fieldKey.second} " +
+                                "($allocKind) mutated via ${insn.name}()",
+                            why = rule.why,
+                            location = location(model, method, insn),
+                            contextual = true,
+                            context = "concurrent task mutation: $taskReason",
+                            callChain = chainLocations,
+                        )
+                        pending = null
+                    } else if (insn.owner.startsWith("java/util/concurrent/")) {
+                        pending = null
+                    }
+                }
+
+                else -> Unit
+            }
+        }
+    }
+
     private fun shortKey(key: MethodKey): String =
         "${key.owner.substringAfterLast('/')}.${key.method.name}"
 
@@ -271,5 +477,31 @@ class FindingCollector(
             "getGlobalRegionScheduler", "getRegionScheduler", "getAsyncScheduler",
             "isGlobalTickThread", "isOwnedByCurrentRegion", "getRegionTPS",
         )
+        val UNSYNC_COLLECTION_TYPES = setOf(
+            "java/util/HashMap", "java/util/LinkedHashMap", "java/util/TreeMap",
+            "java/util/ArrayList", "java/util/LinkedList",
+            "java/util/HashSet", "java/util/LinkedHashSet", "java/util/TreeSet",
+        )
+        val KOTLIN_COLLECTION_FACTORIES = setOf(
+            "kotlin/collections/MapsKt", "kotlin/collections/MapsKt__MapsKt",
+            "kotlin/collections/CollectionsKt", "kotlin/collections/CollectionsKt__CollectionsKt",
+            "kotlin/collections/SetsKt", "kotlin/collections/SetsKt__SetsKt",
+        )
+        val KOTLIN_MUTABLE_FACTORIES = setOf(
+            "mutableMapOf", "hashMapOf", "linkedMapOf",
+            "mutableListOf", "arrayListOf",
+            "mutableSetOf", "hashSetOf", "linkedSetOf",
+        )
+        val MUTABLE_COLLECTION_OWNERS = UNSYNC_COLLECTION_TYPES + setOf(
+            "java/util/Map", "java/util/List", "java/util/Set", "java/util/Collection",
+        )
+        val COLLECTION_MUTATORS = setOf(
+            "put", "putAll", "putIfAbsent", "remove", "clear",
+            "compute", "computeIfAbsent", "computeIfPresent", "merge",
+            "replace", "replaceAll",
+            "add", "addAll", "removeAll", "retainAll", "removeIf", "set", "sort",
+        )
+        val PARALLEL_REGION_OWNERS = setOf("/RegionScheduler", "/EntityScheduler")
+        val PARALLEL_REGION_SUBMITTERS = setOf("run", "execute", "runDelayed", "runAtFixedRate")
     }
 }

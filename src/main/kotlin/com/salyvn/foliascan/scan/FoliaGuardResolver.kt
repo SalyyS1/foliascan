@@ -1,5 +1,7 @@
 package com.salyvn.foliascan.scan
 
+import org.objectweb.asm.Opcodes
+
 /**
  * Finds code whose legacy calls are only reachable when the server is *not* Folia.
  *
@@ -49,14 +51,24 @@ object FoliaGuardResolver {
     )
 
     private const val REGION_PACKAGE = "io/papermc/paper/threadedregions/"
+    private const val REGION_DOTTED_PREFIX = "io.papermc.paper.threadedregions."
     private const val BRAND_CHECK = "isBrandCompatible"
     private val FOLIA_THREAD_CHECKS = setOf("isGlobalTickThread", "isOwnedByCurrentRegion")
+    private val CLASS_LOOKUP_CALLS = setOf("forName", "loadClass")
 
-    fun resolve(jar: JarClasses): GuardIndex = GuardIndex(
-        byClass = guardedClasses(jar),
-        byMethod = guardedMethods(jar),
-        suspectedByClass = suspectedPlatformAlternates(jar),
+    private data class ProbeCatalog(
+        val fields: Map<Pair<String, String>, String>,
+        val methods: Map<Pair<String, String>, String>,
     )
+
+    fun resolve(jar: JarClasses): GuardIndex {
+        val probes = discoverIndirectProbes(jar)
+        return GuardIndex(
+            byClass = guardedClasses(jar, probes),
+            byMethod = guardedMethods(jar, probes),
+            suspectedByClass = suspectedPlatformAlternates(jar),
+        )
+    }
 
     /**
      * Classes that look like one arm of a reflectively chosen platform pair.
@@ -95,14 +107,14 @@ object FoliaGuardResolver {
     }
 
     /** Methods that branch on a Folia test and carry the region-aware path themselves. */
-    private fun guardedMethods(jar: JarClasses): Map<Pair<String, String>, String> {
+    private fun guardedMethods(jar: JarClasses, probes: ProbeCatalog): Map<Pair<String, String>, String> {
         val out = mutableMapOf<Pair<String, String>, String>()
         val pending = ArrayDeque<Pair<MethodKey, String>>()
         val regionCallTargets = regionAwareMethods(jar)
 
         for (model in jar.classes.values) {
             for (method in model.methods) {
-                val probe = probeIn(method) ?: continue
+                val probe = probeIn(method, probes) ?: continue
                 val hasRegionBranch = method.instructions.any { insn ->
                     isRegionApi(insn) ||
                         (insn.kind == InsnKind.CALL && (insn.owner to insn.name) in regionCallTargets)
@@ -172,7 +184,7 @@ object FoliaGuardResolver {
      * itself) prevents a plugin's `onEnable()` - which might log `supportsFolia()` once while
      * instantiating all 20 of its normal managers - from exonerating every manager in the jar.
      */
-    private fun guardedClasses(jar: JarClasses): Map<String, String> {
+    private fun guardedClasses(jar: JarClasses, probes: ProbeCatalog): Map<String, String> {
         val regionAware = jar.classes.values
             .filter { model -> model.methods.any { it.instructions.any(::isRegionApi) } }
             .map { it.internalName }
@@ -181,7 +193,7 @@ object FoliaGuardResolver {
         val out = mutableMapOf<String, String>()
         for ((created, callers) in sites) {
             if (callers.isEmpty()) continue
-            val guards = callers.map { guardIn(jar, it, created, regionAware) }
+            val guards = callers.map { guardIn(jar, it, created, regionAware, probes) }
             if (guards.any { it == null }) continue
             out[created] = guards.filterNotNull().distinct().first()
         }
@@ -224,13 +236,14 @@ object FoliaGuardResolver {
         where: MethodKey,
         created: String,
         regionAware: Set<String>,
+        probes: ProbeCatalog,
     ): String? {
         val body = jar.get(where.owner)?.method(where.method) ?: return null
         val createdSimple = created.substringAfterLast('/')
         val visible = body.instructions.filterNot {
             it.owner == created || it.name.contains(createdSimple, ignoreCase = true)
         }
-        val probe = probeIn(visible) ?: return null
+        val probe = probeIn(visible, probes) ?: return null
         val hasRegionAlternative = body.instructions.any(::isRegionApi) ||
             body.instructions.any {
                 it.kind == InsnKind.TYPE_REF && it.name == "new" &&
@@ -252,17 +265,88 @@ object FoliaGuardResolver {
         return false
     }
 
-    private fun probeIn(method: MethodModel): String? = probeIn(method.instructions)
+    /**
+     * Propagates Folia runtime probes (`Class.forName("io.papermc.paper.threadedregions...")`,
+     * `ServerBuildInfo#isBrandCompatible`, `isFolia` flags) through boolean fields initialized in
+     * `<clinit>` / `<init>` and boolean-returning helper methods so neutral names such as
+     * `HAS_REGIONS` or `supportsThreadedRegions()` are recognised without relying on the identifier
+     * spelling "folia".
+     */
+    private fun discoverIndirectProbes(jar: JarClasses): ProbeCatalog {
+        val fields = mutableMapOf<Pair<String, String>, String>()
+        val methods = mutableMapOf<Pair<String, String>, String>()
 
-    private fun probeIn(instructions: List<Insn>): String? {
+        repeat(3) {
+            val current = ProbeCatalog(fields.toMap(), methods.toMap())
+            for (model in jar.classes.values) {
+                for (method in model.methods) {
+                    val directOrKnown = probeIn(method.instructions, current)
+                        ?: method.instructions.firstNotNullOfOrNull { insn ->
+                            val target = insn.lambdaTarget?.let { jar.get(it.owner)?.method(it.method) }
+                            target?.let { probeIn(it.instructions, current) }
+                        }
+                        ?: continue
+
+                    if (method.id.name == "<clinit>" || method.id.name == "<init>") {
+                        for (insn in method.instructions) {
+                            if (insn.kind == InsnKind.FIELD &&
+                                (insn.opcode == Opcodes.PUTSTATIC || insn.opcode == Opcodes.PUTFIELD) &&
+                                insn.desc == "Z"
+                            ) {
+                                fields.putIfAbsent(insn.owner to insn.name, directOrKnown)
+                            }
+                        }
+                    }
+                    if (method.id.desc.endsWith(")Z")) {
+                        methods.putIfAbsent(model.internalName to method.id.name, directOrKnown)
+                        for (iface in model.interfaces) {
+                            methods.putIfAbsent(iface to method.id.name, directOrKnown)
+                        }
+                    }
+                }
+            }
+        }
+        return ProbeCatalog(fields, methods)
+    }
+
+    private fun probeIn(method: MethodModel, probes: ProbeCatalog): String? =
+        probeIn(method.instructions, probes)
+
+    private fun probeIn(instructions: List<Insn>, probes: ProbeCatalog): String? {
+        val threadedRegionLiteral = instructions.firstOrNull { insn ->
+            insn.kind == InsnKind.LDC_STRING && (
+                insn.name.startsWith(REGION_DOTTED_PREFIX) ||
+                    insn.name.startsWith(REGION_PACKAGE) ||
+                    insn.name.equals("io.papermc.paper.threadedregions.RegionizedServer", ignoreCase = true)
+                )
+        }
+        if (threadedRegionLiteral != null && instructions.any {
+                it.kind == InsnKind.CALL && it.name in CLASS_LOOKUP_CALLS
+            }
+        ) {
+            return "Class.forName(\"${threadedRegionLiteral.name}\")"
+        }
+
         for (insn in instructions) {
-            if (insn.kind == InsnKind.INDY) continue
+            if (insn.kind == InsnKind.INDY || insn.kind == InsnKind.LDC_STRING || insn.kind == InsnKind.MONITOR) {
+                continue
+            }
             if (insn.name.contains("folia", ignoreCase = true)) return insn.name
             if (insn.kind == InsnKind.CALL && insn.name == BRAND_CHECK) {
                 return "ServerBuildInfo.$BRAND_CHECK"
             }
             if (insn.kind == InsnKind.CALL && insn.name in FOLIA_THREAD_CHECKS) {
                 return "${insn.owner.substringAfterLast('/')}.${insn.name}"
+            }
+            if (insn.kind == InsnKind.FIELD &&
+                (insn.opcode == Opcodes.GETSTATIC || insn.opcode == Opcodes.GETFIELD)
+            ) {
+                probes.fields[insn.owner to insn.name]?.let { return "${insn.name} ($it)" }
+            }
+            if (insn.kind == InsnKind.CALL) {
+                probes.methods[insn.owner to insn.name]?.let {
+                    return "${insn.owner.substringAfterLast('/')}.${insn.name} ($it)"
+                }
             }
         }
         return null

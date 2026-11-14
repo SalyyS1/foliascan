@@ -109,3 +109,16 @@ data class ArtifactRule(
     override val fix: String,
     override val provenance: Provenance,
 ) : Rule
+
+/**
+ * Checked against intra-method bytecode dataflow (such as unsynchronized static collection
+ * mutation across concurrent Folia region/async threads).
+ */
+data class ConcurrencyRule(
+    override val id: String,
+    override val severity: Severity,
+    override val title: String,
+    override val why: String,
+    override val fix: String,
+    override val provenance: Provenance,
+) : Rule
