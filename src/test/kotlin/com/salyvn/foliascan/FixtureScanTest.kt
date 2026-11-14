@@ -432,4 +432,66 @@ class FixtureScanTest {
         assertTrue(fs086.isNotEmpty()) { "expected FS086 for openInventory, got: ${report.findings}" }
         assertTrue(fs086.any { it.evidence.contains("Player.openInventory()") })
     }
+
+    @Test
+    fun `v060 fixture flags FS087 blocking get and join on region-completed futures while sparing non-blocking and background futures`() {
+        val report = scanner.scan(FixtureJars.v060())
+        val fs087 = report.findings.filter { it.ruleId == "FS087" }
+        assertEquals(2, fs087.size) {
+            "expected 2 FS087 findings (getChunkAtAsyncUrgently.get and teleportAsync.join), got: " +
+                fs087.map { "${it.location.method}: ${it.evidence}" }
+        }
+        assertTrue(fs087.any { it.evidence.contains("World.getChunkAtAsyncUrgently() blocked via CompletableFuture.get()") })
+        assertTrue(fs087.any { it.evidence.contains("Player.teleportAsync() blocked via CompletableFuture.join()") })
+        assertFalse(fs087.any { it.location.method?.contains("safeNonBlockingChunkAndCpuFuture") == true })
+    }
+
+    @Test
+    fun `v060 fixture flags FS088 live World escape inside Moonrise async ChunkGenerator helper while sparing ChunkData and LimitedRegion`() {
+        val report = scanner.scan(FixtureJars.v060())
+        val fs088 = report.findings.filter { it.ruleId == "FS088" }
+        assertTrue(fs088.isNotEmpty()) { "expected FS088 in StructureGenHelper, got: ${report.findings}" }
+        assertTrue(fs088.all { it.location.className.endsWith("StructureGenHelper") })
+        assertTrue(fs088.all { it.context?.contains("Moonrise async ChunkGenerator") == true })
+        assertTrue(fs088.all { it.callChain.size >= 2 }) {
+            "expected multi-hop taint chain from UnsafeMoonriseChunkGenerator#generateSurface, got: ${fs088.map { it.callChain }}"
+        }
+        assertFalse(report.findings.any { it.location.className.endsWith("SafeMoonriseChunkGenerator") })
+        assertFalse(report.findings.any { it.location.className.endsWith("SafeMoonrisePopulator") })
+    }
+
+    @Test
+    fun `v060 fixture flags FS089 off-region TileState TrialSpawner access while sparing RegionScheduler execute`() {
+        val report = scanner.scan(FixtureJars.v060())
+        val fs089 = report.findings.filter { it.ruleId == "FS089" }
+        assertEquals(1, fs089.size) {
+            "expected 1 FS089 finding in tuneTrialSpawnerHelper, got: ${fs089.map { "${it.location.method}: ${it.evidence}" }}"
+        }
+        val single = fs089.single()
+        assertEquals("tuneTrialSpawnerHelper", single.location.method)
+        assertTrue(single.evidence.contains("TrialSpawner.setCooldownLength()"))
+        assertTrue(single.callChain.size >= 3) {
+            "expected 3-hop async taint chain into tuneTrialSpawnerHelper, got: ${single.callChain}"
+        }
+    }
+
+    @Test
+    fun `v060 fixture flags FS090 captured TileState across delayed RegionScheduler and EntityScheduler while sparing Location refetch`() {
+        val report = scanner.scan(FixtureJars.v060())
+        val fs090 = report.findings.filter { it.ruleId == "FS090" }
+        assertEquals(2, fs090.size) {
+            "expected 2 FS090 findings (RegionScheduler.runDelayed and EntityScheduler.run), got: " +
+                fs090.map { "${it.location.method}: ${it.context}" }
+        }
+        assertTrue(fs090.any { it.context?.contains("RegionScheduler.runDelayed") == true && it.callChain.size >= 2 })
+        assertTrue(fs090.any { it.context?.contains("EntityScheduler.run") == true && it.callChain.size >= 2 })
+        assertFalse(
+            report.findings.any {
+                it.location.method?.contains("safeRefetchedChestInDelayedTicks") == true ||
+                    it.context?.contains("safeRefetchedChestInDelayedTicks") == true
+            },
+        ) {
+            "Location-captured delayed RegionScheduler task re-fetching BlockState was falsely flagged: ${report.findings}"
+        }
+    }
 }

@@ -47,7 +47,7 @@ Inspect one `.jar` or drop an entire server `plugins/` directory directly in you
 - Renders a multi-JAR Server Compatibility Matrix (`PASS`, `PATCHED`, `FAIL`) with Markdown and
   JSON export, plus a 1-click synthesized sample plugin `.jar` for instant testing.
 
-For full intra-jar call-graph async taint propagation (`FS050` through `FS065`, `FS081` concurrency audit, and `FS082` through `FS086` cross-region and lifecycle rules),
+For full intra-jar call-graph async taint propagation (`FS050` through `FS065`, `FS081` concurrency audit, `FS082` through `FS086` cross-region and lifecycle rules, and `FS087` through `FS090` Moonrise async chunk generation and block-entity rules),
 baseline files, and OASIS SARIF v2.1.0 output (`codeFlows` + regional taint call-chain paths), run
 the CLI or GitHub Action below.
 
@@ -59,14 +59,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.5.0.jar MyPlugin.jar
+java -jar foliascan-0.6.0.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.5.0.jar MyPlugin.jar
+java -jar build/libs/foliascan-0.6.0.jar MyPlugin.jar
 ```
 
 ## Usage
@@ -111,7 +111,7 @@ permissions:
   contents: read
   security-events: write
 steps:
-  - uses: SalyyS1/foliascan@v0.3.0
+  - uses: SalyyS1/foliascan@v0.6.0
     with:
       jar: build/libs/*.jar
       sarif-file: foliascan.sarif
@@ -134,14 +134,14 @@ and exits with FoliaScan's threshold exit code.
 | `disable` | `""` | Comma- or space-separated rule IDs to turn off (for example `FS063,FS070`) |
 | `all` | `false` | Report relocated third-party dependency packages too |
 | `sarif-file` | `""` | Optional output file path for a SARIF 2.1.0 report (also exposed as `outputs.sarif-file`) |
-| `version` | `0.3.0` | FoliaScan release version to download and cache |
+| `version` | `0.6.0` | FoliaScan release version to download and cache |
 
 Or invoke the CLI JAR directly in any CI runner:
 
 ```yaml
 - name: Check Folia compatibility
   run: |
-    java -jar foliascan-0.3.0.jar build/libs/*.jar \
+    java -jar foliascan-0.6.0.jar build/libs/*.jar \
       --sarif foliascan.sarif --fail-on critical
 ```
 
@@ -182,6 +182,15 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | FS070 | warning | direct `net.minecraft` / `org.bukkit.craftbukkit` access, one finding per class |
 | FS080 | info | `isPrimaryThread()` used as a safety gate |
 | FS081 | warning | unsynchronized static `HashMap` / `ArrayList` / `HashSet` mutated inside concurrent Folia region or async tasks |
+| FS082 | warning | cross-region passenger attachment or vehicle ejection (`addPassenger`, `removePassenger`, `eject`, `leaveVehicle`) off-region |
+| FS083 | warning | `EntityScheduler#runDelayed` / `runAtFixedRate` submitted with `null` retired callback |
+| FS084 | warning | unchained `Entity#teleportAsync` discarding `CompletableFuture` before subsequent entity access |
+| FS085 | warning | `Bukkit.getOnlinePlayers()` iterated from an off-region context without per-player `EntityScheduler` dispatch |
+| FS086 | warning | synchronous cross-region `HumanEntity#openInventory` / container access off-region |
+| FS087 | warning | blocking `join()` / `get()` / `resultNow()` on `World#getChunkAtAsync*` or `Entity#teleportAsync` region-completed futures |
+| FS088 | warning | live `World` cast or lookup inside Moonrise parallel async `ChunkGenerator` or `BlockPopulator` worker callbacks |
+| FS089 | warning | `TileState`, `Container`, or Paper 26.3 block-entity (`Chest`, `Sign`, `TrialSpawner`, `Vault`, `Crafter`, ...) accessed off-region |
+| FS090 | warning | pre-fetched `BlockState` or `TileState` snapshot captured across delayed `RegionScheduler` ticks or `EntityScheduler` callbacks |
 
 Severities mean specific things:
 

@@ -84,7 +84,13 @@ object ClassAnalyzer {
     ) : MethodVisitor(Opcodes.ASM9) {
 
         private val instructions = mutableListOf<Insn>()
+        private val flowInstructions = mutableListOf<Insn>()
         private var currentLine: Int? = null
+
+        private fun record(insn: Insn) {
+            instructions += insn
+            flowInstructions += insn
+        }
 
         override fun visitLineNumber(line: Int, start: Label?) {
             currentLine = line
@@ -97,7 +103,7 @@ object ClassAnalyzer {
             descriptor: String,
             isInterface: Boolean,
         ) {
-            instructions += Insn(InsnKind.CALL, owner, name, descriptor, currentLine, opcode = opcode)
+            record(Insn(InsnKind.CALL, owner, name, descriptor, currentLine, opcode = opcode))
         }
 
         override fun visitInvokeDynamicInsn(
@@ -110,68 +116,91 @@ object ClassAnalyzer {
             // bootstrap arguments; that handle points at the synthetic method holding the
             // lambda body, which is what we need in order to attribute code inside a lambda.
             val impl = bootstrapMethodArguments.filterIsInstance<Handle>().firstOrNull()
-            instructions += Insn(
-                kind = InsnKind.INDY,
-                owner = impl?.owner ?: "?",
-                name = name,
-                desc = descriptor,
-                line = currentLine,
-                lambdaTarget = impl?.let { MethodKey(it.owner, MethodId(it.name, it.desc)) },
+            record(
+                Insn(
+                    kind = InsnKind.INDY,
+                    owner = impl?.owner ?: "?",
+                    name = name,
+                    desc = descriptor,
+                    line = currentLine,
+                    lambdaTarget = impl?.let { MethodKey(it.owner, MethodId(it.name, it.desc)) },
+                ),
             )
         }
 
         override fun visitTypeInsn(opcode: Int, type: String) {
-            instructions += Insn(InsnKind.TYPE_REF, type, opcodeName(opcode), "", currentLine, opcode = opcode)
+            record(Insn(InsnKind.TYPE_REF, type, opcodeName(opcode), "", currentLine, opcode = opcode))
         }
 
         override fun visitFieldInsn(opcode: Int, owner: String, name: String, descriptor: String) {
-            instructions += Insn(InsnKind.FIELD, owner, name, descriptor, currentLine, opcode = opcode)
+            record(Insn(InsnKind.FIELD, owner, name, descriptor, currentLine, opcode = opcode))
+        }
+
+        override fun visitVarInsn(opcode: Int, varIndex: Int) {
+            if (opcode == Opcodes.ALOAD || opcode == Opcodes.ASTORE) {
+                flowInstructions += Insn(
+                    kind = InsnKind.VAR,
+                    owner = "",
+                    name = varIndex.toString(),
+                    desc = "",
+                    line = currentLine,
+                    opcode = opcode,
+                )
+            }
         }
 
         override fun visitLdcInsn(value: Any?) {
             if (value is String) {
-                instructions += Insn(
-                    kind = InsnKind.LDC_STRING,
-                    owner = "java/lang/String",
-                    name = value,
-                    desc = "Ljava/lang/String;",
-                    line = currentLine,
-                    opcode = Opcodes.LDC,
+                record(
+                    Insn(
+                        kind = InsnKind.LDC_STRING,
+                        owner = "java/lang/String",
+                        name = value,
+                        desc = "Ljava/lang/String;",
+                        line = currentLine,
+                        opcode = Opcodes.LDC,
+                    ),
                 )
             }
         }
 
         override fun visitInsn(opcode: Int) {
             when (opcode) {
-                Opcodes.MONITORENTER -> instructions += Insn(
-                    kind = InsnKind.MONITOR,
-                    owner = "",
-                    name = "monitorenter",
-                    desc = "",
-                    line = currentLine,
-                    opcode = opcode,
+                Opcodes.MONITORENTER -> record(
+                    Insn(
+                        kind = InsnKind.MONITOR,
+                        owner = "",
+                        name = "monitorenter",
+                        desc = "",
+                        line = currentLine,
+                        opcode = opcode,
+                    ),
                 )
-                Opcodes.ACONST_NULL -> instructions += Insn(
-                    kind = InsnKind.NULL_CONST,
-                    owner = "",
-                    name = "aconst_null",
-                    desc = "",
-                    line = currentLine,
-                    opcode = opcode,
+                Opcodes.ACONST_NULL -> record(
+                    Insn(
+                        kind = InsnKind.NULL_CONST,
+                        owner = "",
+                        name = "aconst_null",
+                        desc = "",
+                        line = currentLine,
+                        opcode = opcode,
+                    ),
                 )
-                Opcodes.POP, Opcodes.POP2 -> instructions += Insn(
-                    kind = InsnKind.STACK_POP,
-                    owner = "",
-                    name = if (opcode == Opcodes.POP) "pop" else "pop2",
-                    desc = "",
-                    line = currentLine,
-                    opcode = opcode,
+                Opcodes.POP, Opcodes.POP2 -> record(
+                    Insn(
+                        kind = InsnKind.STACK_POP,
+                        owner = "",
+                        name = if (opcode == Opcodes.POP) "pop" else "pop2",
+                        desc = "",
+                        line = currentLine,
+                        opcode = opcode,
+                    ),
                 )
             }
         }
 
         override fun visitEnd() {
-            onDone(MethodModel(id, access, instructions.toList()))
+            onDone(MethodModel(id, access, instructions.toList(), flowInstructions.toList()))
         }
 
         private fun opcodeName(opcode: Int): String = when (opcode) {

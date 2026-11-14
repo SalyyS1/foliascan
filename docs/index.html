@@ -524,7 +524,7 @@
     <div class="topbar-inner">
       <div class="brand">
         <span>FoliaScan</span>
-        <span class="brand-tag">v0.3.0 Browser Bytecode Scanner</span>
+        <span class="brand-tag">v0.6.0 Browser Bytecode Scanner</span>
       </div>
       <nav class="nav-links" aria-label="Primary links">
         <a href="https://github.com/SalyyS1/foliascan">GitHub Repository</a>
@@ -849,8 +849,54 @@
         why: "HumanEntity#openInventory(Inventory) requires both the player and the inventory holder to reside in the current thread region. Calling openInventory off-region throws IllegalStateException.",
         fix: "Schedule openInventory on the player's owning region via player.getScheduler().run(plugin, ...) and verify tile-entity container location.",
         provenance: "0001-Region-Threading-Base.patch (CraftHumanEntity#openInventory container region ownership checks)"
+      },
+      FS087: {
+        id: "FS087",
+        severity: "WARNING",
+        title: "Blocking join() or get() on getChunkAtAsync or teleportAsync future risks region deadlock",
+        why: "Moonrise completes getChunkAtAsync, getChunkAtAsyncUrgently, and teleportAsync futures on the target region tick thread. Blocking synchronously via join() or get() stalls or deadlocks the region tick loop.",
+        fix: "Chain work non-blockingly via .thenAccept(result -> { ... }) instead of join() or get().",
+        provenance: "0001-Region-Threading-Base.patch (Moonrise RegionizedChunkTaskScheduler & CraftWorld#getChunkAtAsync)"
+      },
+      FS088: {
+        id: "FS088",
+        severity: "WARNING",
+        title: "Live World access inside Moonrise parallel async ChunkGenerator or BlockPopulator",
+        why: "Paper and Folia 26.3 run ChunkGenerator phases and BlockPopulator#populate on Moonrise chunk worker threads. Casting WorldInfo to World or calling Bukkit.getWorld / World#getBlockAt outside ChunkData and LimitedRegion throws IllegalStateException.",
+        fix: "Restrict ChunkGenerator logic to ChunkData and WorldInfo, and BlockPopulator logic to LimitedRegion.",
+        provenance: "0001-Region-Threading-Base.patch (Moonrise ChunkSystem parallel generation worker threads)"
+      },
+      FS089: {
+        id: "FS089",
+        severity: "WARNING",
+        title: "Block entity (TileState / Container) accessed from an off-region context",
+        why: "Folia ticks block entities per-region in RegionizedWorldData#tickBlockEntities and guards CraftBlockEntityState and CraftContainer#getInventory with TickThread.ensureTickThread.",
+        fix: "Schedule block-entity operations on Bukkit.getRegionScheduler().execute(plugin, blockLocation, task) and fetch block.getState() inside that callback.",
+        provenance: "0001-Region-Threading-Base.patch (CraftBlockEntityState & RegionizedWorldData#tickBlockEntities)"
+      },
+      FS090: {
+        id: "FS090",
+        severity: "WARNING",
+        title: "Captured BlockState or TileState snapshot accessed across delayed or entity-bound ticks",
+        why: "Capturing a pre-fetched BlockState or TileState into RegionScheduler.runDelayed / runAtFixedRate or EntityScheduler callbacks uses stale block-entity snapshots across regional ticks or across entity region boundaries.",
+        fix: "Capture an immutable Location, schedule on Bukkit.getRegionScheduler() for that Location, and re-fetch location.getBlock().getState() inside the scheduled tick.",
+        provenance: "0001-Region-Threading-Base.patch (RegionizedWorldData#tickBlockEntities & EntityScheduler vs RegionScheduler)"
       }
     };
+
+    const TILE_ENTITY_OWNERS = new Set([
+      "org/bukkit/block/TileState", "org/bukkit/block/Container", "org/bukkit/block/Lockable",
+      "org/bukkit/block/Lidded", "org/bukkit/block/Barrel", "org/bukkit/block/Beacon",
+      "org/bukkit/block/BlastFurnace", "org/bukkit/block/BrewingStand", "org/bukkit/block/Campfire",
+      "org/bukkit/block/Chest", "org/bukkit/block/ChiseledBookshelf", "org/bukkit/block/CommandBlock",
+      "org/bukkit/block/Crafter", "org/bukkit/block/CreatureSpawner", "org/bukkit/block/Dispenser",
+      "org/bukkit/block/Dropper", "org/bukkit/block/Furnace", "org/bukkit/block/HangingSign",
+      "org/bukkit/block/Hopper", "org/bukkit/block/Jukebox", "org/bukkit/block/Lectern",
+      "org/bukkit/block/SculkCatalyst", "org/bukkit/block/SculkSensor", "org/bukkit/block/SculkShrieker",
+      "org/bukkit/block/ShulkerBox", "org/bukkit/block/Sign", "org/bukkit/block/Skull",
+      "org/bukkit/block/Smoker", "org/bukkit/block/TrialSpawner", "org/bukkit/block/Vault",
+      "org/bukkit/block/sign/SignSide", "org/bukkit/inventory/BlockInventoryHolder"
+    ]);
 
     const PATCHER_MARKERS = [
       "com/patch/foliaphantom/patcher/FoliaPatcher.class",
@@ -1758,6 +1804,65 @@
             (ref.name === "openInventory" || ref.name === "openWorkbench" || ref.name === "openEnchanting" || ref.name === "openMerchant" || ref.name === "closeInventory")
           ) {
             emitOnce(RULES.FS086, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS089: Off-region TileState / Container block-entity access
+          if (classHasAsyncSignal && TILE_ENTITY_OWNERS.has(ref.owner)) {
+            emitOnce(RULES.FS089, simpleOwner + "." + ref.name + "()", false);
+          }
+        }
+
+        // FS087: Blocking join/get on getChunkAtAsync* or teleportAsync futures
+        const hasRegionFutureProducer = model.methodRefs.some(
+          (r) =>
+            (r.owner === "org/bukkit/World" && (r.name === "getChunkAtAsync" || r.name === "getChunkAtAsyncUrgently")) ||
+            (r.owner.startsWith("org/bukkit/entity/") && r.name === "teleportAsync")
+        );
+        const blockingFutureCall = model.methodRefs.find(
+          (r) =>
+            (r.owner === "java/util/concurrent/CompletableFuture" || r.owner === "java/util/concurrent/Future") &&
+            (r.name === "join" || r.name === "get" || r.name === "resultNow")
+        );
+        if (hasRegionFutureProducer && blockingFutureCall) {
+          emitOnce(RULES.FS087, "CompletableFuture." + blockingFutureCall.name + "() on async region future", false);
+        }
+
+        // FS088: Moonrise parallel async ChunkGenerator / BlockPopulator live World escape
+        if (
+          model.superClass === "org/bukkit/generator/ChunkGenerator" ||
+          model.superClass === "org/bukkit/generator/BlockPopulator"
+        ) {
+          const worldEscape =
+            model.classRefs.includes("org/bukkit/World") ||
+            model.methodRefs.some(
+              (r) =>
+                r.owner === "org/bukkit/World" ||
+                ((r.owner === "org/bukkit/Bukkit" || r.owner === "org/bukkit/Server") &&
+                  (r.name === "getWorld" || r.name === "getWorlds"))
+            );
+          if (worldEscape) {
+            emitOnce(RULES.FS088, "Live org.bukkit.World reference inside async chunk generator/populator", false);
+          }
+        }
+
+        // FS090: Captured BlockState / TileState snapshot across delayed RegionScheduler or EntityScheduler
+        const hasDelayedOrEntitySchedule = model.methodRefs.some(
+          (r) =>
+            (r.owner.endsWith("/RegionScheduler") && (r.name === "runDelayed" || r.name === "runAtFixedRate")) ||
+            r.owner.endsWith("/EntityScheduler")
+        );
+        if (hasDelayedOrEntitySchedule) {
+          const capturesTileInLambda = model.declaredMethods.some((m) => {
+            if (!m.name.includes("lambda")) return false;
+            const params = m.descriptor.split(")")[0] || "";
+            if (params.includes("Lorg/bukkit/block/BlockState;")) return true;
+            for (const owner of TILE_ENTITY_OWNERS) {
+              if (params.includes("L" + owner + ";")) return true;
+            }
+            return false;
+          });
+          if (capturesTileInLambda) {
+            emitOnce(RULES.FS090, "Captured BlockState/TileState parameter in scheduled task lambda", false);
           }
         }
 

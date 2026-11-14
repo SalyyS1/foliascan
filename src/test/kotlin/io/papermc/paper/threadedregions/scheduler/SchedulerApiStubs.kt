@@ -18,6 +18,8 @@ interface GlobalRegionScheduler {
 interface RegionScheduler {
     fun execute(plugin: Any, location: Location, task: Runnable)
     fun run(plugin: Any, location: Location, task: (ScheduledTask) -> Unit): ScheduledTask
+    fun runDelayed(plugin: Any, location: Location, task: java.util.function.Consumer<ScheduledTask>, delayTicks: Long): ScheduledTask
+    fun runAtFixedRate(plugin: Any, location: Location, task: java.util.function.Consumer<ScheduledTask>, initialDelayTicks: Long, periodTicks: Long): ScheduledTask
 }
 
 interface AsyncScheduler {

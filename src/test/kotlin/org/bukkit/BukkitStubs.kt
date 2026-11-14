@@ -3,22 +3,30 @@
 // scanner looks at matter: type names and method names.
 package org.bukkit
 
+import org.bukkit.block.Block
 import org.bukkit.entity.Player
+import org.bukkit.generator.WorldInfo
 import org.bukkit.scheduler.BukkitScheduler
 import org.bukkit.scoreboard.ScoreboardManager
 import io.papermc.paper.threadedregions.scheduler.AsyncScheduler
 import io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler
 import io.papermc.paper.threadedregions.scheduler.RegionScheduler
+import java.util.concurrent.CompletableFuture
 
-class Location(val world: World?, val x: Double, val y: Double, val z: Double)
+class Location(val world: World?, val x: Double, val y: Double, val z: Double) {
+    fun getBlock(): Block = throw UnsupportedOperationException()
+}
 
 interface Chunk {
     fun getEntities(): Array<Any>
     fun load(): Boolean
 }
 
-interface World {
+interface World : WorldInfo {
     fun getChunkAt(x: Int, z: Int): Any?
+    fun getChunkAtAsync(x: Int, z: Int): CompletableFuture<Chunk>
+    fun getChunkAtAsyncUrgently(x: Int, z: Int): CompletableFuture<Chunk>
+    fun getBlockAt(x: Int, y: Int, z: Int): Block
     fun loadChunk(x: Int, z: Int): Boolean
     fun unloadChunk(x: Int, z: Int): Boolean
     fun createExplosion(x: Double, y: Double, z: Double, power: Float): Boolean
@@ -48,6 +56,9 @@ object Bukkit {
 
     @JvmStatic
     fun createWorld(name: String): World? = null
+
+    @JvmStatic
+    fun getWorld(name: String): World? = null
 
     @JvmStatic
     fun unloadWorld(name: String, save: Boolean): Boolean = false

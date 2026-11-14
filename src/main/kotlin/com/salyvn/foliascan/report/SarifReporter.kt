@@ -121,11 +121,7 @@ object SarifReporter {
                                 buildJsonObject {
                                     putJsonArray("locations") {
                                         finding.callChain.forEachIndexed { idx, hop ->
-                                            val role = when (idx) {
-                                                0 -> "Off-region taint entry"
-                                                finding.callChain.lastIndex -> "Region-guarded sink (${finding.evidence})"
-                                                else -> "In-jar call hop $idx"
-                                            }
+                                            val role = flowStepRole(finding, idx, finding.callChain.lastIndex)
                                             add(
                                                 buildJsonObject {
                                                     putJsonObject("location") {
@@ -203,6 +199,23 @@ object SarifReporter {
         return tokens.joinToString("") { tok ->
             tok.first().uppercaseChar() + tok.drop(1)
         }
+    }
+
+    private fun flowStepRole(finding: Finding, idx: Int, lastIdx: Int): String = when {
+        idx == 0 -> when (finding.ruleId) {
+            "FS081" -> "Concurrent scheduler entry"
+            "FS088" -> "Async chunk-generation taint entry"
+            "FS090" -> "Block-entity snapshot capture and schedule"
+            else -> "Off-region taint entry"
+        }
+        idx == lastIdx -> when (finding.ruleId) {
+            "FS081" -> "Unsynchronized static mutation sink (${finding.evidence})"
+            "FS087" -> "Blocking region-future sink (${finding.evidence})"
+            "FS088" -> "Live-world escape sink (${finding.evidence})"
+            "FS090" -> "Delayed or cross-region block-entity sink (${finding.evidence})"
+            else -> "Region-guarded sink (${finding.evidence})"
+        }
+        else -> "In-jar call hop $idx"
     }
 
     private fun level(severity: Severity?): String = when (severity) {

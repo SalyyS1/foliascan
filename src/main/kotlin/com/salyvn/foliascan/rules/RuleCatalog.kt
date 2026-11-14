@@ -33,6 +33,63 @@ object RuleCatalog {
     /** Internal name of the scheduler package that signals real Folia migration work. */
     const val FOLIA_SCHEDULER_PACKAGE = "io/papermc/paper/threadedregions/scheduler/"
 
+    /**
+     * Bukkit and Paper 26.3 world-bound block-entity (TileState / Container) interfaces whose
+     * backing NMS BlockEntity ticks per-region under RegionizedWorldData#tickBlockEntities.
+     * Deliberately excludes org.bukkit.block.data (detached BlockData descriptors) and enums.
+     */
+    val TILE_ENTITY_OWNERS: Set<String> = setOf(
+        "org/bukkit/block/TileState",
+        "org/bukkit/block/Container",
+        "org/bukkit/block/Lockable",
+        "org/bukkit/block/Lidded",
+        "org/bukkit/block/Banner",
+        "org/bukkit/block/Barrel",
+        "org/bukkit/block/Beacon",
+        "org/bukkit/block/Bed",
+        "org/bukkit/block/Bell",
+        "org/bukkit/block/BlastFurnace",
+        "org/bukkit/block/BrewingStand",
+        "org/bukkit/block/BrushableBlock",
+        "org/bukkit/block/CalibratedSculkSensor",
+        "org/bukkit/block/Campfire",
+        "org/bukkit/block/Chest",
+        "org/bukkit/block/ChiseledBookshelf",
+        "org/bukkit/block/CommandBlock",
+        "org/bukkit/block/Comparator",
+        "org/bukkit/block/Conduit",
+        "org/bukkit/block/Crafter",
+        "org/bukkit/block/CreatureSpawner",
+        "org/bukkit/block/DaylightDetector",
+        "org/bukkit/block/DecoratedPot",
+        "org/bukkit/block/Dispenser",
+        "org/bukkit/block/DoubleChest",
+        "org/bukkit/block/Dropper",
+        "org/bukkit/block/EnchantingTable",
+        "org/bukkit/block/EnderChest",
+        "org/bukkit/block/EndGateway",
+        "org/bukkit/block/Furnace",
+        "org/bukkit/block/HangingSign",
+        "org/bukkit/block/Hopper",
+        "org/bukkit/block/Jigsaw",
+        "org/bukkit/block/Jukebox",
+        "org/bukkit/block/Lectern",
+        "org/bukkit/block/SculkCatalyst",
+        "org/bukkit/block/SculkSensor",
+        "org/bukkit/block/SculkShrieker",
+        "org/bukkit/block/ShulkerBox",
+        "org/bukkit/block/Sign",
+        "org/bukkit/block/Skull",
+        "org/bukkit/block/Smoker",
+        "org/bukkit/block/Structure",
+        "org/bukkit/block/TestBlock",
+        "org/bukkit/block/TestInstanceBlock",
+        "org/bukkit/block/TrialSpawner",
+        "org/bukkit/block/Vault",
+        "org/bukkit/block/sign/SignSide",
+        "org/bukkit/inventory/BlockInventoryHolder",
+    )
+
     val foliaSupportFlag = ManifestRule(
         id = "FS001",
         severity = Severity.BLOCKER,
@@ -493,6 +550,82 @@ object RuleCatalog {
         contextual = true,
     )
 
+    val blockingAsyncFuture = ConcurrencyRule(
+        id = "FS087",
+        severity = Severity.WARNING,
+        title = "Blocking join() or get() on getChunkAtAsync or teleportAsync future risks region deadlock",
+        why = "Under Paper and Folia 26.3's Moonrise chunk pipeline, World#getChunkAtAsync, " +
+            "World#getChunkAtAsyncUrgently, and Entity#teleportAsync complete their returned " +
+            "CompletableFuture on the target region's tick thread after asynchronous chunk generation " +
+            "or cross-region entity handoff finishes. Calling join(), get(), or resultNow() synchronously " +
+            "blocks the region tick thread while waiting for a callback queued onto that same region " +
+            "thread, deadlocking the region or stalling Moonrise region merge/split barriers.",
+        fix = "Chain continuation logic non-blockingly via .thenAccept(result -> { ... }), which Folia " +
+            "executes directly on the owning region thread once the chunk or teleport completes.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "Moonrise RegionizedChunkTaskScheduler & CraftWorld#getChunkAtAsync, CraftEntity#teleportAsync",
+        ),
+    )
+
+    val asyncChunkGeneratorWorldEscape = ConcurrencyRule(
+        id = "FS088",
+        severity = Severity.WARNING,
+        title = "Live World access inside Moonrise parallel async ChunkGenerator or BlockPopulator",
+        why = "Paper and Folia 26.3 execute ChunkGenerator phases (generateNoise, generateSurface, " +
+            "generateBedrock, generateCaves) and BlockPopulator#populate concurrently across Moonrise " +
+            "chunk worker pool threads rather than on an owning region TickThread. Casting WorldInfo " +
+            "to World, resolving live worlds via Bukkit.getWorld, or calling World#getBlockAt outside " +
+            "the provided ChunkData or LimitedRegion buffer throws IllegalStateException under " +
+            "TickThread.ensureTickThread or corrupts ungenerated neighbor chunks.",
+        fix = "Restrict ChunkGenerator reads and writes to the passed ChunkGenerator.ChunkData and " +
+            "WorldInfo parameters, and restrict BlockPopulator logic to LimitedRegion#isInRegion " +
+            "and LimitedRegion block/entity methods.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "Moonrise ChunkSystem parallel generation worker threads & LimitedRegion cutoff guards",
+        ),
+    )
+
+    val blockEntityOffRegionAccess = CallRule(
+        id = "FS089",
+        severity = Severity.WARNING,
+        title = "Block entity (TileState / Container) accessed from an off-region context",
+        why = "Folia ticks block entities (chests, hoppers, furnaces, signs, spawners, trial spawners, " +
+            "vaults, crafters, and PersistentDataContainers) per-region in RegionizedWorldData#tickBlockEntities " +
+            "and guards CraftBlockEntityState and CraftContainer#getInventory with TickThread.ensureTickThread. " +
+            "Accessing TileState or Container methods from an async task, packet listener, chunk worker, " +
+            "or GlobalRegionScheduler races against regional block-entity ticking or throws IllegalStateException.",
+        fix = "Hop onto the chunk's owning region via Bukkit.getRegionScheduler().execute(plugin, blockLocation, task) " +
+            "and fetch block.getState() inside that regional callback.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftBlockEntityState, CraftContainer#getInventory, and RegionizedWorldData#tickBlockEntities",
+        ),
+        owners = TILE_ENTITY_OWNERS,
+        excludeMethods = setOf("values", "valueOf", "name", "ordinal"),
+        contextual = true,
+    )
+
+    val capturedBlockEntityAcrossTicks = ConcurrencyRule(
+        id = "FS090",
+        severity = Severity.WARNING,
+        title = "Captured BlockState or TileState snapshot accessed across delayed or entity-bound ticks",
+        why = "Capturing a pre-fetched BlockState or TileState (such as Chest, Sign, CreatureSpawner, " +
+            "TrialSpawner, Vault, or Crafter) into a RegionScheduler.runDelayed / runAtFixedRate lambda " +
+            "or an EntityScheduler callback violates Folia's regional block-entity lifecycle: across " +
+            "ticks, regional hoppers/crafters/players mutate the live BlockEntity, chunks unload, " +
+            "regions split or merge, and an entity's EntityScheduler thread moves with the entity " +
+            "away from the block's owning chunk region.",
+        fix = "Capture an immutable Location (or world name + block coordinates) instead of a " +
+            "BlockState/TileState instance, schedule on Bukkit.getRegionScheduler() for that Location, " +
+            "and re-fetch location.getBlock().getState() fresh inside the scheduled tick.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "RegionizedWorldData#tickBlockEntities & EntityScheduler vs RegionScheduler chunk ownership",
+        ),
+    )
+
     // --- assembled views -----------------------------------------------------------------
 
     val manifestRules: List<ManifestRule> = listOf(foliaSupportFlag)
@@ -507,6 +640,9 @@ object RuleCatalog {
         unsynchronizedStaticCollection,
         entitySchedulerLifecycle,
         unchainedTeleportAsync,
+        blockingAsyncFuture,
+        asyncChunkGeneratorWorldEscape,
+        capturedBlockEntityAcrossTicks,
     )
 
     val callRules: List<CallRule> = listOf(
@@ -519,6 +655,7 @@ object RuleCatalog {
         crossRegionPassenger,
         onlinePlayersDirectMutation,
         crossRegionInventory,
+        blockEntityOffRegionAccess,
     )
 
     val all: List<Rule> =

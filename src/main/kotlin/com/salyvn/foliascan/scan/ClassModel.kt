@@ -34,6 +34,9 @@ enum class InsnKind {
 
     /** pop / pop2 instruction discarding a stack operand (e.g. unhandled return value). */
     STACK_POP,
+
+    /** aload / astore local variable reference instruction for intra-method value tracking. */
+    VAR,
 }
 
 /**
@@ -63,6 +66,7 @@ data class MethodModel(
     val id: MethodId,
     val access: Int,
     val instructions: List<Insn>,
+    val flowInstructions: List<Insn> = instructions,
 )
 
 data class ClassModel(

@@ -217,4 +217,49 @@ class ReportFormatTest {
         assertEquals(Severity.CRITICAL, Severity.parse("CRITICAL"))
         assertEquals(null, Severity.parse("never"))
     }
+
+    @Test
+    fun `sarif emits role-specific codeFlows for v060 Moonrise chunk generation and captured block-entity rules`() {
+        val v060Report = ScanReport(
+            toolVersion = "0.6.0",
+            jars = listOf(JarScanner().scan(FixtureJars.v060()), JarScanner().scan(FixtureJars.v040())),
+        )
+        val sarif = Json.parseToJsonElement(SarifReporter.render(v060Report)).jsonObject
+        val results = sarif["runs"]!!.jsonArray.single().jsonObject["results"]!!.jsonArray
+
+        val fs088 = results.first { it.jsonObject["ruleId"]!!.jsonPrimitive.content == "FS088" }.jsonObject
+        val fs088Locs = fs088["codeFlows"]!!.jsonArray.single().jsonObject["threadFlows"]!!
+            .jsonArray.single().jsonObject["locations"]!!.jsonArray
+        assertTrue(fs088Locs.size >= 2)
+        assertTrue(
+            fs088Locs.first().jsonObject["location"]!!.jsonObject["message"]!!
+                .jsonObject["text"]!!.jsonPrimitive.content.startsWith("Async chunk-generation taint entry:"),
+        )
+        assertTrue(
+            fs088Locs.last().jsonObject["location"]!!.jsonObject["message"]!!
+                .jsonObject["text"]!!.jsonPrimitive.content.startsWith("Live-world escape sink"),
+        )
+
+        val fs090 = results.first { it.jsonObject["ruleId"]!!.jsonPrimitive.content == "FS090" }.jsonObject
+        val fs090Locs = fs090["codeFlows"]!!.jsonArray.single().jsonObject["threadFlows"]!!
+            .jsonArray.single().jsonObject["locations"]!!.jsonArray
+        assertTrue(fs090Locs.size >= 2)
+        assertTrue(
+            fs090Locs.first().jsonObject["location"]!!.jsonObject["message"]!!
+                .jsonObject["text"]!!.jsonPrimitive.content.startsWith("Block-entity snapshot capture and schedule:"),
+        )
+        assertTrue(
+            fs090Locs.last().jsonObject["location"]!!.jsonObject["message"]!!
+                .jsonObject["text"]!!.jsonPrimitive.content.startsWith("Delayed or cross-region block-entity sink"),
+        )
+
+        val fs081 = results.first { it.jsonObject["ruleId"]!!.jsonPrimitive.content == "FS081" }.jsonObject
+        val fs081Locs = fs081["codeFlows"]!!.jsonArray.single().jsonObject["threadFlows"]!!
+            .jsonArray.single().jsonObject["locations"]!!.jsonArray
+        assertTrue(fs081Locs.size >= 2)
+        assertTrue(
+            fs081Locs.first().jsonObject["location"]!!.jsonObject["message"]!!
+                .jsonObject["text"]!!.jsonPrimitive.content.startsWith("Concurrent scheduler entry:"),
+        )
+    }
 }

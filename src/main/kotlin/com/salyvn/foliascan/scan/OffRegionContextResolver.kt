@@ -28,6 +28,11 @@ data class OffRegionOrigin(
      * `IllegalStateException: Cannot read world asynchronously`.
      */
     val isGlobalTick: Boolean = false,
+    /**
+     * True when the entry point is a Moonrise parallel async ChunkGenerator or BlockPopulator
+     * callback running on a chunk-generation worker pool thread.
+     */
+    val isChunkGeneration: Boolean = false,
     /** Ordered method hops from [entryPoint] down to the current tainted method. */
     val hops: List<TaintHop> = emptyList(),
 )
@@ -115,6 +120,18 @@ object OffRegionContextResolver {
     )
     private val NETTY_HANDLER_METHODS = setOf("channelRead", "channelRead0", "userEventTriggered")
 
+    private val CHUNK_GENERATOR_SUPERTYPES = setOf("org/bukkit/generator/ChunkGenerator")
+    private val CHUNK_GENERATOR_METHODS = setOf(
+        "generateNoise", "generateSurface", "generateBedrock", "generateCaves",
+        "generateChunkData", "getBaseHeight",
+        "shouldGenerateNoise", "shouldGenerateSurface", "shouldGenerateBedrock",
+        "shouldGenerateCaves", "shouldGenerateDecorations", "shouldGenerateMobs",
+        "shouldGenerateStructures",
+    )
+
+    private val BLOCK_POPULATOR_SUPERTYPES = setOf("org/bukkit/generator/BlockPopulator")
+    private val BLOCK_POPULATOR_METHODS = setOf("populate")
+
     private val TIMER_SUBMITTERS = setOf("schedule", "scheduleAtFixedRate")
 
     private val CF_TYPES = setOf(
@@ -143,20 +160,22 @@ object OffRegionContextResolver {
                 val firstLine = method.instructions.firstNotNullOfOrNull { it.line }
                 val entryReason = asyncEventReason(method.id.desc)
                     ?: packetOrNettyReason(model, method, jar)
-                entryReason?.let { reason ->
+                val chunkGenReason = chunkGenerationReason(model, method, jar)
+                if (entryReason != null || chunkGenReason != null) {
                     seeds.putIfAbsent(
                         here,
                         OffRegionOrigin(
                             entryPoint = here,
-                            reason = reason,
+                            reason = entryReason ?: chunkGenReason!!,
                             depth = 0,
+                            isChunkGeneration = chunkGenReason != null,
                             hops = listOf(TaintHop(here, firstLine, model.sourceFile)),
                         ),
                     )
                 }
                 method.instructions.forEachIndexed { index, insn ->
                     if (isRegionReentrySubmitter(insn)) {
-                        taskHandedTo(method, index, jar)?.let { reentries += it }
+                        reentries += tasksHandedTo(method, index, jar)
                     } else if (isGlobalRegionSubmitter(insn)) {
                         taskHandedTo(method, index, jar)?.let { target ->
                             reentries += target
@@ -229,6 +248,24 @@ object OffRegionContextResolver {
 
             name in NETTY_HANDLER_METHODS && jar.inheritsAny(model.internalName, NETTY_HANDLER_SUPERTYPES) ->
                 "Netty channel handler ($name on Netty I/O thread)"
+
+            else -> null
+        }
+    }
+
+    /**
+     * True when [method] overrides a Paper/Folia Moonrise ChunkGenerator or BlockPopulator
+     * generation phase, which executes concurrently on chunk worker pool threads outside any
+     * owning region TickThread.
+     */
+    private fun chunkGenerationReason(model: ClassModel, method: MethodModel, jar: JarClasses): String? {
+        val name = method.id.name
+        return when {
+            name in CHUNK_GENERATOR_METHODS && jar.inheritsAny(model.internalName, CHUNK_GENERATOR_SUPERTYPES) ->
+                "Moonrise async ChunkGenerator ($name on chunk worker thread)"
+
+            name in BLOCK_POPULATOR_METHODS && jar.inheritsAny(model.internalName, BLOCK_POPULATOR_SUPERTYPES) ->
+                "Moonrise async BlockPopulator ($name on chunk worker thread)"
 
             else -> null
         }
@@ -312,8 +349,13 @@ object OffRegionContextResolver {
      * lambda (unwrapping Kotlin 2.x two-stage FunctionN -> Java SAM `invokedynamic` bridges),
      * or the closest preceding `new` of an in-jar class that has a `run()` method.
      */
-    private fun taskHandedTo(method: MethodModel, callIndex: Int, jar: JarClasses): MethodKey? {
-        for (i in callIndex - 1 downTo 0) {
+    private fun taskHandedTo(method: MethodModel, callIndex: Int, jar: JarClasses): MethodKey? =
+        tasksHandedTo(method, callIndex, jar).firstOrNull()
+
+    private fun tasksHandedTo(method: MethodModel, callIndex: Int, jar: JarClasses): List<MethodKey> {
+        val out = mutableListOf<MethodKey>()
+        var i = callIndex - 1
+        while (i >= 0) {
             val prev = method.instructions[i]
             if (prev.kind == InsnKind.INDY && prev.lambdaTarget != null) {
                 if (prev.desc.startsWith("(Lkotlin/jvm/functions/Function") && i > 0) {
@@ -321,21 +363,24 @@ object OffRegionContextResolver {
                     if (inner.kind == InsnKind.INDY && inner.lambdaTarget != null &&
                         inner.desc.contains(")Lkotlin/jvm/functions/Function")
                     ) {
-                        return inner.lambdaTarget
+                        out += inner.lambdaTarget
+                        i -= 2
+                        continue
                     }
                 }
-                return prev.lambdaTarget
+                out += prev.lambdaTarget
+                i -= 1
+                continue
             }
             if (prev.kind == InsnKind.TYPE_REF && prev.name == "new") {
-                val candidate = jar.get(prev.owner) ?: continue
-                val run = candidate.methods.firstOrNull { it.id == RUN_METHOD }
-                if (run != null) return MethodKey(candidate.internalName, run.id)
-                // A BukkitRunnable subclass without its own run() is abstract usage; skip.
+                val candidate = jar.get(prev.owner)
+                val run = candidate?.methods?.firstOrNull { it.id == RUN_METHOD }
+                if (candidate != null && run != null) out += MethodKey(candidate.internalName, run.id)
             }
-            // Another call in between means the stack shape is unclear - stop guessing.
-            if (prev.kind == InsnKind.CALL && prev.name != "<init>") return null
+            if (prev.kind == InsnKind.CALL && prev.name != "<init>") break
+            i -= 1
         }
-        return null
+        return out
     }
 
     /** Breadth-first taint across in-jar call edges, keeping the shortest path to each method. */

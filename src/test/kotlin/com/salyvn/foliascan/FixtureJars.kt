@@ -111,6 +111,14 @@ object FixtureJars {
         foliaSupported = true,
     )
 
+    /** Exercises v0.6.0 blocking region futures (FS087), Moonrise async ChunkGenerator escape (FS088), off-region TileState (FS089), and cross-tick TileState capture (FS090). */
+    fun v060(): Path = build(
+        jarName = "v060-plugin",
+        packagePath = "fixtures/v060/",
+        main = "fixtures.v060.V060Plugin",
+        foliaSupported = true,
+    )
+
     private fun build(
         jarName: String,
         main: String?,
