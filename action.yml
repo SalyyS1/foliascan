@@ -31,9 +31,9 @@ inputs:
     required: false
     default: ""
   version:
-    description: "FoliaScan release version to download (for example: 0.2.1)."
+    description: "FoliaScan release version to download (for example: 0.3.0)."
     required: false
-    default: "0.2.1"
+    default: "0.3.0"
 
 outputs:
   exit-code:
@@ -237,18 +237,12 @@ runs:
         temp_dir.mkdir(parents=True, exist_ok=True)
         json_report_path = temp_dir / "foliascan-report.json"
 
+        sarif_args = ["--sarif", sarif_file] if sarif_file else []
         json_cmd = [
             java_bin, "-jar", foliascan_jar, *common_args,
-            "--format", "json", "--fail-on", "never", "-o", str(json_report_path), *targets,
+            "--format", "json", "--fail-on", "never", "-o", str(json_report_path), *sarif_args, *targets,
         ]
         subprocess.run(json_cmd, check=True, stdout=subprocess.DEVNULL)
-
-        if sarif_file:
-            sarif_cmd = [
-                java_bin, "-jar", foliascan_jar, *common_args,
-                "--format", "sarif", "--fail-on", "never", "-o", sarif_file, *targets,
-            ]
-            subprocess.run(sarif_cmd, check=True)
 
         report = json.loads(json_report_path.read_text(encoding="utf-8"))
         severity_ranks = {"BLOCKER": 4, "CRITICAL": 3, "WARNING": 2, "INFO": 1}

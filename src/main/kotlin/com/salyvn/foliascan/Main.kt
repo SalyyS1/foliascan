@@ -42,6 +42,11 @@ class FoliaScanCommand : CliktCommand(name = "foliascan") {
     private val output by option("-o", "--output", help = "Write the report to this file")
         .path()
 
+    private val sarifOut by option(
+        "--sarif",
+        help = "Write an OASIS SARIF 2.1.0 report to this file (can be combined with console or json output)",
+    ).path()
+
     private val failOn by option(
         "--fail-on",
         help = "Lowest severity that makes the run exit non-zero (default: critical)",
@@ -106,18 +111,34 @@ class FoliaScanCommand : CliktCommand(name = "foliascan") {
         }
 
         val report = Baseline.apply(raw, baselineIn?.let { Baseline.load(it) } ?: emptySet())
-        val text = when (format) {
-            "json" -> JsonReporter.render(report)
-            "sarif" -> SarifReporter.render(report)
-            else -> ConsoleReporter(color = !noColor && output == null, verbose = verbose)
-                .render(report)
+        val sarifRendered by lazy { SarifReporter.render(report) }
+
+        sarifOut?.let { target ->
+            target.parent?.let { Files.createDirectories(it) }
+            Files.writeString(target, sarifRendered)
+            if (format == "sarif" && output == null) {
+                echo("Wrote sarif report to $target")
+            }
         }
 
-        output?.let { target ->
-            target.parent?.let { Files.createDirectories(it) }
-            Files.writeString(target, text)
-            echo("Wrote $format report to $target")
-        } ?: echo(text)
+        if (!(format == "sarif" && sarifOut != null && output == null)) {
+            val text = when (format) {
+                "json" -> JsonReporter.render(report)
+                "sarif" -> sarifRendered
+                else -> ConsoleReporter(color = !noColor && output == null, verbose = verbose)
+                    .render(report)
+            }
+
+            output?.let { target ->
+                target.parent?.let { Files.createDirectories(it) }
+                Files.writeString(target, text)
+                echo("Wrote $format report to $target")
+            } ?: echo(text)
+        }
+
+        if (sarifOut != null && !(format == "sarif" && output == null) && output != null) {
+            echo("Wrote sarif report to $sarifOut")
+        }
 
         val threshold = Severity.parse(failOn)
         if (threshold != null && report.worstRank() >= threshold.rank) {

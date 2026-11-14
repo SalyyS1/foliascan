@@ -65,6 +65,8 @@ data class Finding(
     val contextual: Boolean = false,
     /** For contextual findings: how this code is reached off-region. */
     val context: String? = null,
+    /** Ordered call-chain hops from the off-region entry point down to this sink call site. */
+    val callChain: List<CodeLocation> = emptyList(),
 ) {
     /**
      * Stable identity for baseline suppression. Deliberately excludes the line number so

@@ -1,5 +1,18 @@
 package com.salyvn.foliascan.scan
 
+/** One method hop along an off-region taint call chain. */
+data class TaintHop(
+    val method: MethodKey,
+    val line: Int? = null,
+    val sourceFile: String? = null,
+) {
+    fun renderShort(): String {
+        val cls = method.owner.substringAfterLast('/')
+        val loc = if (line != null && line >= 1) ":${line}" else ""
+        return "${cls}#${method.method.name}${loc}"
+    }
+}
+
 /** Why a method is treated as running off the region that owns the data it touches. */
 data class OffRegionOrigin(
     /** The method where the off-region work is handed off, e.g. the caller of submit(). */
@@ -15,6 +28,8 @@ data class OffRegionOrigin(
      * `IllegalStateException: Cannot read world asynchronously`.
      */
     val isGlobalTick: Boolean = false,
+    /** Ordered method hops from [entryPoint] down to the current tainted method. */
+    val hops: List<TaintHop> = emptyList(),
 )
 
 /** Methods that are reachable from an off-region entry point, with the shortest reason found. */
@@ -85,8 +100,17 @@ object OffRegionContextResolver {
         for (model in jar.classes.values) {
             for (method in model.methods) {
                 val here = MethodKey(model.internalName, method.id)
+                val firstLine = method.instructions.firstNotNullOfOrNull { it.line }
                 asyncEventReason(method.id.desc)?.let { reason ->
-                    seeds.putIfAbsent(here, OffRegionOrigin(here, reason, 0))
+                    seeds.putIfAbsent(
+                        here,
+                        OffRegionOrigin(
+                            entryPoint = here,
+                            reason = reason,
+                            depth = 0,
+                            hops = listOf(TaintHop(here, firstLine, model.sourceFile)),
+                        ),
+                    )
                 }
                 method.instructions.forEachIndexed { index, insn ->
                     if (isRegionReentrySubmitter(insn)) {
@@ -97,22 +121,45 @@ object OffRegionContextResolver {
                             seeds.putIfAbsent(
                                 target,
                                 OffRegionOrigin(
-                                    here,
-                                    "submitted via GlobalRegionScheduler.${insn.name} (region={null})",
-                                    0,
+                                    entryPoint = here,
+                                    reason = "submitted via GlobalRegionScheduler.${insn.name} (region={null})",
+                                    depth = 0,
                                     isGlobalTick = true,
+                                    hops = seedHops(here, insn.line ?: firstLine, model.sourceFile, target, jar),
                                 ),
                             )
                         }
                     }
                     val reason = submitterReason(insn) ?: return@forEachIndexed
                     taskHandedTo(method, index, jar)?.let { target ->
-                        seeds.putIfAbsent(target, OffRegionOrigin(here, reason, 0))
+                        seeds.putIfAbsent(
+                            target,
+                            OffRegionOrigin(
+                                entryPoint = here,
+                                reason = reason,
+                                depth = 0,
+                                hops = seedHops(here, insn.line ?: firstLine, model.sourceFile, target, jar),
+                            ),
+                        )
                     }
                 }
             }
         }
         return OffRegionContexts(propagate(seeds, reentries, jar))
+    }
+
+    private fun seedHops(
+        caller: MethodKey,
+        callLine: Int?,
+        callerSource: String?,
+        target: MethodKey,
+        jar: JarClasses,
+    ): List<TaintHop> {
+        val callerHop = TaintHop(caller, callLine, callerSource)
+        if (caller == target) return listOf(callerHop)
+        val targetClass = jar.get(target.owner)
+        val targetLine = targetClass?.method(target.method)?.instructions?.firstNotNullOfOrNull { it.line }
+        return listOf(callerHop, TaintHop(target, targetLine, targetClass?.sourceFile))
     }
 
     /** True when the method signature takes a single Bukkit/Paper async event parameter. */
@@ -212,8 +259,19 @@ object OffRegionContextResolver {
                 } ?: continue
                 if (next in reentries) continue
                 if (result.containsKey(next)) continue
-                if (jar.get(next.owner)?.method(next.method) == null) continue
-                result[next] = origin.copy(depth = origin.depth + 1)
+                val nextClass = jar.get(next.owner) ?: continue
+                val nextBody = nextClass.method(next.method) ?: continue
+                val updatedPrefix = if (origin.hops.isNotEmpty()) {
+                    val last = origin.hops.last()
+                    origin.hops.dropLast(1) + last.copy(line = insn.line ?: last.line)
+                } else {
+                    listOf(TaintHop(current, insn.line, model.sourceFile))
+                }
+                val nextFirstLine = nextBody.instructions.firstNotNullOfOrNull { it.line }
+                result[next] = origin.copy(
+                    depth = origin.depth + 1,
+                    hops = updatedPrefix + TaintHop(next, nextFirstLine, nextClass.sourceFile),
+                )
                 queue.addLast(next)
             }
         }

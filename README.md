@@ -1,12 +1,13 @@
 # FoliaScan
 
 Tell whether a Minecraft plugin jar will actually survive on [Folia](https://github.com/PaperMC/Folia)
-— by reading its bytecode, not its README.
+- by reading its bytecode, not its README.
 
 ![FoliaScan Terminal Output](assets/terminal-demo.svg)
 
-Works on any jar — including one you did not compile. Server owners can check a paid plugin
-before installing it; developers can gate a release in CI.
+Works on any jar - including one you did not compile. Server owners can check a paid plugin
+before installing it; developers can gate a release in CI and surface regional thread-safety bugs
+directly in GitHub's **Security -> Code scanning** tab.
 
 **[Open Browser Drag-and-Drop JAR Scanner](https://salyys1.github.io/foliascan/)** | **[GitHub Action (`uses: SalyyS1/foliascan@main`)](#in-ci)** | **[CLI Releases](https://github.com/SalyyS1/foliascan/releases)**
 
@@ -20,14 +21,14 @@ completely, and nothing tells you until a player triggers the code path:
 - **The entire legacy scheduler is dead.** Folia inserts an unconditional
   `if (true) throw new UnsupportedOperationException()` into `CraftScheduler#handle`, so every
   `runTask`, `runTaskLater`, `runTaskTimer` and async variant throws. Not "on the wrong
-  thread" — always.
+  thread" - always.
 - **The Scoreboard API is not implemented.** `registerNewObjective`, `registerNewTeam`,
   `clearSlot`, `getNewScoreboard` and `Player#setScoreboard` all throw unconditionally. Every
   scoreboard HUD, stat sidebar and team system breaks.
 - **Runtime world creation is gone.** `createWorld` and `unloadWorld` throw.
 - **Synchronous teleports are rejected** with `Must use teleportAsync while in region threading`.
 - **`Entity`, `World`, `Block` and `BlockState` calls are region-guarded.** Folia wraps
-  `CraftEntity#getHandle` — and ~170 subclass overrides — in a thread check, so touching an
+  `CraftEntity#getHandle` - and ~170 subclass overrides - in a thread check, so touching an
   entity from a thread that does not own it throws.
 
 Adding `folia-supported: true` silences the loader, not the exceptions. FoliaScan finds the
@@ -47,7 +48,8 @@ Inspect one `.jar` or drop an entire server `plugins/` directory directly in you
   JSON export, plus a 1-click synthesized sample plugin `.jar` for instant testing.
 
 For full intra-jar call-graph async taint propagation (`FS050` through `FS064`), baseline files,
-and SARIF output, run the CLI or GitHub Action below.
+and OASIS SARIF v2.1.0 output (`codeFlows` + regional taint call-chain paths), run the CLI or
+GitHub Action below.
 
 ## Install
 
@@ -57,14 +59,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.2.1.jar MyPlugin.jar
+java -jar foliascan-0.3.0.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.2.1.jar MyPlugin.jar
+java -jar build/libs/foliascan-0.3.0.jar MyPlugin.jar
 ```
 
 ## Usage
@@ -76,6 +78,7 @@ foliascan [OPTIONS] TARGET...
 
   --format console|json|sarif     output format (default: console)
   -o, --output PATH               write the report to a file
+  --sarif PATH                    write an OASIS SARIF 2.1.0 report to PATH
   --fail-on LEVEL                 blocker|critical|warning|info|never (default: critical)
   --all                           report relocated dependency packages too
   --include PACKAGE               only scan this package (repeatable)
@@ -90,31 +93,38 @@ foliascan [OPTIONS] TARGET...
 
 Exit codes: `0` clean at the chosen threshold, `1` findings at or above it, `2` bad usage.
 
-Scan a whole server directory:
+Scan a whole server directory or emit a SARIF v2.1.0 report alongside console output:
 
 ```bash
 foliascan /srv/mc/plugins --fail-on blocker
+foliascan build/libs/MyPlugin.jar --sarif foliascan.sarif
 ```
 
-### In CI
+### In CI (GitHub Code Scanning + SARIF v2.1.0)
 
-Gate any Paper, Folia, or Spigot repository in 3 lines with the official composite GitHub Action.
-It caches `foliascan-<version>.jar`, publishes a Markdown compatibility matrix to
-`$GITHUB_STEP_SUMMARY`, optionally writes a SARIF 2.1.0 report, and exits with FoliaScan's
-threshold exit code:
+Gate any Paper, Folia, or Spigot repository and publish Folia thread-safety bugs natively to the
+GitHub **Security -> Code scanning** tab in 10 lines using the composite GitHub Action and
+`github/codeql-action/upload-sarif`:
 
 ```yaml
-- uses: SalyyS1/foliascan@main
-  with:
-    jar: build/libs/*.jar
-    fail-on: critical
-    sarif-file: foliascan.sarif
-
-- uses: github/codeql-action/upload-sarif@v3
-  if: always()
-  with:
-    sarif_file: foliascan.sarif
+permissions:
+  contents: read
+  security-events: write
+steps:
+  - uses: SalyyS1/foliascan@v0.3.0
+    with:
+      jar: build/libs/*.jar
+      sarif-file: foliascan.sarif
+  - uses: github/codeql-action/upload-sarif@v3
+    if: always()
+    with:
+      sarif_file: foliascan.sarif
 ```
+
+The action caches `foliascan-<version>.jar`, publishes a Markdown compatibility matrix to
+`$GITHUB_STEP_SUMMARY`, writes OASIS SARIF v2.1.0 (with `tool.driver` metadata, deduplicated rule
+help, `%SRCROOT%` source paths, bytecode line numbers, and `codeFlows` regional taint call chains),
+and exits with FoliaScan's threshold exit code.
 
 | Input | Default | Purpose |
 | --- | --- | --- |
@@ -123,16 +133,16 @@ threshold exit code:
 | `baseline` | `""` | Baseline JSON file path used to suppress accepted findings |
 | `disable` | `""` | Comma- or space-separated rule IDs to turn off (for example `FS063,FS070`) |
 | `all` | `false` | Report relocated third-party dependency packages too |
-| `sarif-file` | `""` | Path to write a SARIF 2.1.0 report alongside the step summary |
-| `version` | `0.2.1` | FoliaScan release version to download and cache |
+| `sarif-file` | `""` | Optional output file path for a SARIF 2.1.0 report (also exposed as `outputs.sarif-file`) |
+| `version` | `0.3.0` | FoliaScan release version to download and cache |
 
 Or invoke the CLI JAR directly in any CI runner:
 
 ```yaml
 - name: Check Folia compatibility
   run: |
-    java -jar foliascan.jar build/libs/*.jar \
-      --format sarif -o foliascan.sarif --fail-on critical
+    java -jar foliascan-0.3.0.jar build/libs/*.jar \
+      --sarif foliascan.sarif --fail-on critical
 ```
 
 Adopting on a large legacy plugin? Record what exists today and fail only on new problems:
@@ -151,7 +161,7 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 
 | Id | Severity | What it catches |
 |----|----------|-----------------|
-| FS001 | blocker | descriptor missing `folia-supported: true` — Folia refuses to load the plugin |
+| FS001 | blocker | descriptor missing `folia-supported: true` - Folia refuses to load the plugin |
 | FS002 | warning | the `folia-supported` flag was written by a patcher, not by the author |
 | FS010 | critical | `Bukkit.getScheduler()` / `Server#getScheduler()` |
 | FS011 | critical | any call on `BukkitScheduler`, including via a stored field |
@@ -163,22 +173,22 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | FS041 | critical | `World#getTickableTileEntityCount` |
 | FS050 | warning | `getTPS`, `getAverageTickTime` read off-region |
 | FS051 | warning | `dispatchCommand` off-region |
-| FS060 | warning | region-guarded `World` calls (`getChunkAt`, `loadChunk`, `unloadChunk`, `createExplosion`, `setBiome`, …) |
-| FS061 | warning | region-guarded `Block` calls (`getType`, `setType`, `getBlockData`, `setBlockData`, `getBlockState`, `breakNaturally`, …) |
+| FS060 | warning | region-guarded `World` calls (`getChunkAt`, `loadChunk`, `unloadChunk`, `createExplosion`, `setBiome`, ...) |
+| FS061 | warning | region-guarded `Block` calls (`getType`, `setType`, `getBlockData`, `setBlockData`, `getBlockState`, `breakNaturally`, ...) |
 | FS062 | warning | region-guarded `BlockState` calls (`update`, `getDrops`, `randomTick`) |
 | FS063 | warning | any `org.bukkit.entity` call from an off-region context |
-| FS064 | warning | global-region-guarded `World` calls (`setTime`, `setStorm`, `setGameRule`, `setChunkForceLoaded`, `setMetadata`, …) |
+| FS064 | warning | global-region-guarded `World` calls (`setTime`, `setStorm`, `setGameRule`, `setChunkForceLoaded`, `setMetadata`, ...) |
 | FS070 | warning | direct `net.minecraft` / `org.bukkit.craftbukkit` access, one finding per class |
 | FS080 | info | `isPrimaryThread()` used as a safety gate |
 
 Severities mean specific things:
 
-- **blocker** — the plugin will not load at all.
-- **critical** — Folia throws whenever the code runs, on any thread. Reported unconditionally,
+- **blocker** - the plugin will not load at all.
+- **critical** - Folia throws whenever the code runs, on any thread. Reported unconditionally,
   unless the code is behind a Folia guard, in which case it drops to info.
-- **warning** — legal from the region that owns the data, fatal from anywhere else. Only
+- **warning** - legal from the region that owns the data, fatal from anywhere else. Only
   reported when the call sits in a context FoliaScan can show is off-region.
-- **info** — behaviour differs enough to need a human decision.
+- **info** - behaviour differs enough to need a human decision.
 
 FS070 is deliberately counted per class rather than per call site. An NMS adapter or model engine
 touches server internals thousands of times by design, and enumerating each one buries every other
@@ -188,7 +198,7 @@ finding, so the finding carries the distinct type count instead.
 
 1. Parse every class with ASM. Nothing is loaded or executed, and no bytecode is written.
 2. Read `paper-plugin.yml` / `plugin.yml` for the descriptor, then work out the plugin's own
-   package(s). `main` alone is not enough — plugins commonly park the entry class in a platform
+   package(s). `main` alone is not enough - plugins commonly park the entry class in a platform
    subpackage (`dev.aurelium.auraskills.bukkit.AuraSkills`) while most of the code lives in
    sibling packages, and forks often keep the legacy `main` package for addon compatibility while
    placing new code under `<tld>.<author>.<PluginName>` (e.g. `GravesX` keeping
@@ -200,11 +210,12 @@ finding, so the finding carries the distinct type count instead.
    `AsyncScheduler`, a Bukkit/Paper async event handler (`AsyncPlayerChatEvent`,
    `AsyncChatEvent`, `AsyncPlayerPreLoginEvent`), or a `GlobalRegionScheduler` callback
    (`region={null}`, which owns global server/world state `FS050`/`FS064` but owns no chunks,
-   blocks, or entities `FS060`–`FS063`).
-4. Propagate that breadth-first across in-jar call edges, so a helper called from an async
-   task is reported too — with the entry point and depth printed next to the finding. Callbacks
-   inside an async method that hop back onto `EntityScheduler` or `RegionScheduler` are recognised
-   as regional re-entries and do not inherit off-region taint.
+   blocks, or entities `FS060` through `FS063`).
+4. Propagate that breadth-first across in-jar call edges, recording every call-site hop and
+   bytecode line number so helpers called from async tasks carry the complete regional taint call
+   chain (emitted in human messages and SARIF `codeFlows` / `threadFlows`). Callbacks inside an
+   async method that hop back onto `EntityScheduler` or `RegionScheduler` are recognised as
+   regional re-entries and do not inherit off-region taint.
 5. Find the Folia guards, so the correct non-Folia branch of a dual-platform plugin is not
    reported as a defect (below).
 6. Apply the rule table, keeping one finding per source line.
@@ -229,7 +240,7 @@ val scheduler = if (IS_FOLIA) PaperScheduler() else BukkitScheduler()
 A method qualifies when it both tests for Folia *and* contains a region-scheduler call; the second
 half is what stops this from muting everything, since unconditional legacy code has no region call
 to pair with the test. A class qualifies when every `new` of it sits in a method that tests for
-Folia — and the test has to be independent of the class itself, or anything named `FoliaScheduler`
+Folia - and the test has to be independent of the class itself, or anything named `FoliaScheduler`
 would vacuously guard itself. Lambdas created inside a guarded method inherit the guard, because a
 task built in the legacy branch compiles into its own synthetic method.
 
@@ -241,22 +252,22 @@ errs toward reporting, the second away from it.
 FoliaLib is the case that defeats both shapes, and it is worth knowing about because it is the
 library most Folia-targeting plugins reach for. Its factory does
 `Class.forName(basePackage + implName)`, so nothing ever writes `new SpigotImplementation()` and no
-method of that class tests for Folia — the test lives in the factory, one indirection away, keyed by
+method of that class tests for Folia - the test lives in the factory, one indirection away, keyed by
 a string. What is still visible is the shape: a class this jar never constructs, sitting next to a
 sibling implementation of the same interface that does use the region API. That earns an explanation
-naming the sibling, and **no change in severity** — it is suggestive, not proof, and a wrong
+naming the sibling, and **no change in severity** - it is suggestive, not proof, and a wrong
 all-clear costs more than a wrong warning.
 
 Relocated dependencies are analysed but not blamed. A compatibility shim like FoliaLib
 deliberately contains a legacy `BukkitScheduler` implementation for non-Folia servers, so
 reporting it is noise; the code still counts toward "Folia API usage" and still taints the plugin
-code it calls. Two signals identify it: build-tool folder names (`libs`, `shaded`, `vendor`, …)
+code it calls. Two signals identify it: build-tool folder names (`libs`, `shaded`, `vendor`, ...)
 and a curated list of library leaf names, because relocation often leaves no marker folder at all
 (`dev.aurelium.auraskills.kyori`). That list is necessarily incomplete, so every subtree it
 matches is named in the report notes, `--exclude` adds your own, and `--all` turns it off.
 
 Only segments *below* the plugin's own root count, and a jar with no plugin descriptor is never
-filtered at all — otherwise pointing the scanner at one of those libraries directly would
+filtered at all - otherwise pointing the scanner at one of those libraries directly would
 exonerate the whole jar. Scanning `IF-0.12.0.jar` should report the two
 `Bukkit.getScheduler().runTask` calls in its `GuiListener`, not "no findings" just because
 `inventoryframework` is a name plugins shade. The same rule is what keeps MythicLib's own
@@ -265,12 +276,12 @@ exonerate the whole jar. Scanning `IF-0.12.0.jar` should report the two
 A name match is also skipped when the segment before it says "adapter": plugins name their own
 integration packages after the library they integrate with, so `comp.protocollib` and
 `hooks.placeholderapi` are the plugin's code, not a copy of the library. The search continues
-past it, so a library genuinely relocated deeper (`compat/libs/kyori/…`) is still found.
+past it, so a library genuinely relocated deeper (`compat/libs/kyori/...`) is still found.
 
 Every entry on the name list has to be a library *identity* rather than a domain noun, for the
 same reason. Measured over eleven real plugin jars plus a Prometheus exporter, `nbt`,
 `annotations`, `mysql`, `sqlite` and `metrics` only ever matched plugins' own packages and were
-removed — `metrics` hid all four critical findings in an exporter whose entire job is metrics,
+removed - `metrics` hid all four critical findings in an exporter whose entire job is metrics,
 including a `scheduleSyncRepeatingTask` call. `internal` and `external` went too: no build tool
 generates either, and plugins use both constantly. Deleting the list wholesale is not the answer
 either, since one jar that relocates without any marker folder (`dev.aurelium.auraskills.acf`,
@@ -285,7 +296,7 @@ route legacy scheduler calls through its own shim. Different job, and useful if 
 to boot today. Two things to know if you use it: `PluginPatcher#modifyPluginDescriptor` appends
 `folia-supported: true` unconditionally, without analysing whether the result is region-safe, and
 its own README disclaims thread-safety guarantees. So a patched jar's declared flag is a machine's
-assumption, not the author's claim — which is what rule **FS002** exists to surface. FoliaScan
+assumption, not the author's claim - which is what rule **FS002** exists to surface. FoliaScan
 detects the runtime classes pasta bundles and says so instead of trusting the flag.
 
 **[folia-checker](https://github.com/IronDiscipline-Project/folia-checker)** (MIT) is a VS Code
@@ -295,7 +306,7 @@ hand-tuned patterns.
 
 **[FoliaLib](https://github.com/technicallycoded/FoliaLib)** and similar are runtime helper
 libraries: they help you *write* Folia-compatible code. FoliaScan tells you whether you already
-did. They compose — a jar bundling FoliaLib scans clean, because relocated shim code is analysed
+did. They compose - a jar bundling FoliaLib scans clean, because relocated shim code is analysed
 but not blamed.
 
 ## What it does not do
@@ -306,8 +317,8 @@ Worth reading before treating a clean run as a guarantee.
 - **Calls leaving the jar are not followed.** If an async entry point lives in a dependency and
   calls back into your code by interface, the taint can be missed.
 - **Reflection, injected executors and thread pools obtained from other plugins are invisible.**
-- **A helper used from both sync and async callers is reported.** That is intentional — it
-  genuinely may run off-region — but it is not always a bug.
+- **A helper used from both sync and async callers is reported.** That is intentional - it
+  genuinely may run off-region - but it is not always a bug.
 - **`--fail-on critical` only judges unconditional failures.** Region-guarded misuse that
   FoliaScan cannot place in an off-region context will not appear at all.
 - Findings need line numbers to be actionable; a jar stripped of debug info still gets class and
@@ -351,7 +362,7 @@ FoliaScan is part of a focused static-analysis, staging, resource-pack, and codi
 
 New rules need a provenance entry pointing at the Folia source that justifies them, plus a
 fixture in `src/test/kotlin/fixtures/` proving both that the rule fires on bad code and that it
-stays quiet on the region-aware equivalent. Rules without evidence will not be merged — the
+stays quiet on the region-aware equivalent. Rules without evidence will not be merged - the
 value of this tool is that its output can be checked.
 
 ```bash

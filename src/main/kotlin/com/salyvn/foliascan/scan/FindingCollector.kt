@@ -116,16 +116,39 @@ class FindingCollector(
             if (!enabled(rule) || !rule.matches(insn.owner, insn.name)) continue
             if (rule.contextual && context == null) continue
             if (rule.contextual && context?.isGlobalTick == true && (rule.id == "FS050" || rule.id == "FS064")) continue
+            val sinkHops = context?.takeIf { rule.contextual }?.let { origin ->
+                if (origin.hops.isNotEmpty()) {
+                    val last = origin.hops.last()
+                    origin.hops.dropLast(1) + last.copy(line = insn.line ?: last.line)
+                } else {
+                    listOf(TaintHop(MethodKey(model.internalName, method.id), insn.line, model.sourceFile))
+                }
+            }.orEmpty()
+            val chainLocations = sinkHops.map { hop ->
+                CodeLocation(
+                    jar = jarName,
+                    className = hop.method.owner.replace('/', '.'),
+                    method = hop.method.method.name,
+                    line = hop.line,
+                    sourceFile = hop.sourceFile,
+                )
+            }
             out += finding(
                 rule = rule,
                 evidence = "${insn.owner.substringAfterLast('/')}.${insn.name}()",
                 why = rule.why,
                 location = location(model, method, insn),
                 contextual = rule.contextual,
-                context = context?.takeIf { rule.contextual }?.let {
-                    "reached off-region: ${it.reason} (entry point ${shortKey(it.entryPoint)}, " +
-                        "${it.depth} call(s) deep)"
+                context = context?.takeIf { rule.contextual }?.let { origin ->
+                    val chainSuffix = if (sinkHops.size > 1) {
+                        "; call chain: ${sinkHops.joinToString(" -> ") { it.renderShort() }}"
+                    } else {
+                        ""
+                    }
+                    "reached off-region: ${origin.reason} (entry point ${shortKey(origin.entryPoint)}, " +
+                        "${origin.depth} call(s) deep$chainSuffix)"
                 },
+                callChain = chainLocations,
             )
         }
     }
@@ -186,6 +209,7 @@ class FindingCollector(
         location: CodeLocation,
         contextual: Boolean = false,
         context: String? = null,
+        callChain: List<CodeLocation> = emptyList(),
     ): Finding {
         // Code only reachable behind a runtime Folia check cannot run on Folia, so its legacy
         // calls are the correct non-Folia branch rather than a defect.
@@ -209,6 +233,7 @@ class FindingCollector(
             provenance = rule.provenance.render(),
             contextual = contextual,
             context = guard ?: suspicion ?: context,
+            callChain = if (guard == null && suspicion == null) callChain else emptyList(),
         )
     }
 

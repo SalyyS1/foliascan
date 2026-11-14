@@ -1,37 +1,42 @@
 package com.salyvn.foliascan.report
 
+import com.salyvn.foliascan.model.CodeLocation
 import com.salyvn.foliascan.model.Finding
 import com.salyvn.foliascan.model.ScanReport
 import com.salyvn.foliascan.model.Severity
 import com.salyvn.foliascan.rules.RuleCatalog
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
 /**
- * SARIF 2.1.0 output so GitHub code scanning (and any other SARIF consumer) can ingest a run.
+ * OASIS SARIF v2.1.0 output tailored for GitHub Actions `github/codeql-action/upload-sarif`
+ * (Security -> Code scanning) as well as general SARIF 2.1.0 consumers.
  *
- * Caveat worth knowing: a jar carries a source *file name* but not a repository path, so the
- * emitted artifact URI is reconstructed from the package plus that file name. It lines up for
- * conventional Maven/Gradle layouts and is best-effort everywhere else; the logical location
- * always carries the exact class and method.
+ * A compiled plugin JAR carries a class package and `SourceFile` attribute rather than a full
+ * repository-relative path, so `artifactLocation.uri` is reconstructed against `%SRCROOT%` for
+ * conventional Gradle/Maven source trees while `logicalLocations` always records the exact JVM
+ * binary class and method. Contextual findings with multi-hop regional taint also emit SARIF
+ * `codeFlows` / `threadFlows` so GitHub Code Scanning renders the step-by-step async call chain.
  */
 object SarifReporter {
 
-    private const val SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
-    private const val INFO_URI = "https://github.com/SalyyS1/foliascan"
+    const val SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
+    const val VERSION = "2.1.0"
+    const val INFO_URI = "https://github.com/SalyyS1/foliascan"
+    private const val RULES_HELP_URI = "$INFO_URI#rules"
 
     private val json = Json { prettyPrint = true }
 
     fun render(report: ScanReport): String {
         val used = report.allFindings.map { it.ruleId }.distinct().sorted()
+        val ruleIndices = used.withIndex().associate { (idx, id) -> id to idx }
         val sarif = buildJsonObject {
             put("\$schema", SCHEMA)
-            put("version", "2.1.0")
+            put("version", VERSION)
             putJsonArray("runs") {
                 add(
                     buildJsonObject {
@@ -44,7 +49,9 @@ object SarifReporter {
                             }
                         }
                         putJsonArray("results") {
-                            report.allFindings.forEach { add(resultObject(it)) }
+                            report.allFindings.forEach { finding ->
+                                add(resultObject(finding, ruleIndices[finding.ruleId] ?: 0))
+                            }
                         }
                     },
                 )
@@ -55,59 +62,147 @@ object SarifReporter {
 
     private fun ruleObject(ruleId: String) = buildJsonObject {
         val rule = RuleCatalog.byId(ruleId)
+        val title = rule?.title ?: ruleId
+        val whyText = rule?.why?.oneLine() ?: title
+        val fixText = rule?.fix?.oneLine() ?: ""
+        val provText = rule?.provenance?.render() ?: ""
+        val sevLevel = level(rule?.severity)
+
         put("id", ruleId)
-        put("name", rule?.title ?: ruleId)
-        putJsonObject("shortDescription") { put("text", rule?.title ?: ruleId) }
-        putJsonObject("fullDescription") { put("text", rule?.why?.oneLine() ?: "") }
-        putJsonObject("help") { put("text", rule?.fix ?: "") }
-        putJsonObject("defaultConfiguration") { put("level", level(rule?.severity)) }
+        put("name", pascalIdentifier(title, fallback = ruleId))
+        putJsonObject("shortDescription") { put("text", title) }
+        putJsonObject("fullDescription") { put("text", whyText) }
+        put("helpUri", RULES_HELP_URI)
+        putJsonObject("help") {
+            put("text", fixText)
+            put(
+                "markdown",
+                buildString {
+                    append("**Why this fails on Folia:** ").append(whyText)
+                    if (fixText.isNotEmpty()) {
+                        append("\n\n**Recommended Fix:** ").append(fixText)
+                    }
+                    if (provText.isNotEmpty()) {
+                        append("\n\n**Folia Patch Provenance:** `").append(provText).append("`")
+                    }
+                },
+            )
+        }
+        putJsonObject("defaultConfiguration") { put("level", sevLevel) }
         putJsonObject("properties") {
-            put("provenance", rule?.provenance?.render() ?: "")
+            put("provenance", provText)
+            put("problem.severity", sevLevel)
             putJsonArray("tags") {
                 add("folia")
                 add("minecraft")
                 add("concurrency")
+                add("thread-safety")
             }
         }
     }
 
-    private fun resultObject(finding: Finding) = buildJsonObject {
+    private fun resultObject(finding: Finding, ruleIndex: Int) = buildJsonObject {
         put("ruleId", finding.ruleId)
+        put("ruleIndex", ruleIndex)
         put("level", level(finding.severity))
         putJsonObject("message") {
             val reached = finding.context?.let { " ${it.replaceFirstChar(Char::uppercaseChar)}." } ?: ""
             put("text", "${finding.title}: ${finding.evidence}.$reached ${finding.why.oneLine()}")
         }
         putJsonArray("locations") {
-            add(
-                buildJsonObject {
-                    putJsonObject("physicalLocation") {
-                        putJsonObject("artifactLocation") { put("uri", artifactUri(finding)) }
-                        finding.location.line?.let { line ->
-                            putJsonObject("region") { put("startLine", line) }
+            add(locationObject(finding.location))
+        }
+        if (finding.callChain.size >= 2) {
+            putJsonArray("codeFlows") {
+                add(
+                    buildJsonObject {
+                        putJsonArray("threadFlows") {
+                            add(
+                                buildJsonObject {
+                                    putJsonArray("locations") {
+                                        finding.callChain.forEachIndexed { idx, hop ->
+                                            val role = when (idx) {
+                                                0 -> "Off-region taint entry"
+                                                finding.callChain.lastIndex -> "Region-guarded sink (${finding.evidence})"
+                                                else -> "In-jar call hop $idx"
+                                            }
+                                            add(
+                                                buildJsonObject {
+                                                    putJsonObject("location") {
+                                                        putPhysicalLocation(hop)
+                                                        putLogicalLocations(hop)
+                                                        putJsonObject("message") {
+                                                            put("text", "$role: ${hop.render()}")
+                                                        }
+                                                    }
+                                                },
+                                            )
+                                        }
+                                    }
+                                },
+                            )
                         }
-                    }
-                    putJsonArray("logicalLocations") {
-                        add(
-                            buildJsonObject {
-                                put("fullyQualifiedName", finding.location.render())
-                                put("kind", if (finding.location.method != null) "function" else "type")
-                            },
-                        )
-                    }
-                },
-            )
+                    },
+                )
+            }
         }
         putJsonObject("partialFingerprints") { put("foliascan/v1", finding.fingerprint()) }
     }
 
-    /** Reconstructs a plausible repository path from the package and the source file name. */
-    private fun artifactUri(finding: Finding): String {
-        val source = finding.location.sourceFile ?: return finding.location.jar
-        val pkg = finding.location.className.substringBeforeLast('.', "")
-        val dir = if (pkg.isEmpty()) "" else pkg.replace('.', '/') + "/"
-        val root = if (source.endsWith(".kt")) "src/main/kotlin/" else "src/main/java/"
-        return "$root$dir$source"
+    private fun locationObject(loc: CodeLocation) = buildJsonObject {
+        putPhysicalLocation(loc)
+        putLogicalLocations(loc)
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putPhysicalLocation(loc: CodeLocation) {
+        putJsonObject("physicalLocation") {
+            putJsonObject("artifactLocation") {
+                put("uri", artifactUri(loc))
+                put("uriBaseId", "%SRCROOT%")
+            }
+            loc.line?.takeIf { it >= 1 }?.let { line ->
+                putJsonObject("region") { put("startLine", line) }
+            }
+        }
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putLogicalLocations(loc: CodeLocation) {
+        putJsonArray("logicalLocations") {
+            add(
+                buildJsonObject {
+                    put("fullyQualifiedName", loc.render())
+                    put("kind", if (loc.method != null) "function" else "type")
+                },
+            )
+        }
+    }
+
+    /** Reconstructs a clean repository-relative path with forward slashes for SARIF consumers. */
+    internal fun artifactUri(loc: CodeLocation): String {
+        val source = loc.sourceFile
+        if (source != null) {
+            val pkg = loc.className.substringBeforeLast('.', "")
+            val dir = if (pkg.isEmpty()) "" else pkg.replace('.', '/') + "/"
+            val root = if (source.endsWith(".kt")) "src/main/kotlin/" else "src/main/java/"
+            return "$root$dir$source"
+        }
+        if (loc.className == "plugin.yml" || loc.className == "paper-plugin.yml") {
+            return "src/main/resources/${loc.className}"
+        }
+        if (loc.className.isNotBlank()) {
+            val outer = loc.className.replace('/', '.').substringBefore('$')
+            return "src/main/java/${outer.replace('.', '/')}.java"
+        }
+        return loc.jar.replace('\\', '/').trimStart('/')
+    }
+
+    /** Converts a human rule title into a whitespace-free PascalCase SARIF descriptor name. */
+    internal fun pascalIdentifier(title: String, fallback: String): String {
+        val tokens = title.split(Regex("[^A-Za-z0-9]+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return fallback
+        return tokens.joinToString("") { tok ->
+            tok.first().uppercaseChar() + tok.drop(1)
+        }
     }
 
     private fun level(severity: Severity?): String = when (severity) {
