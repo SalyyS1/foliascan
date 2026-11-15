@@ -524,7 +524,7 @@
     <div class="topbar-inner">
       <div class="brand">
         <span>FoliaScan</span>
-        <span class="brand-tag">v0.7.0 Browser Bytecode Scanner</span>
+        <span class="brand-tag">v0.8.0 Browser Bytecode Scanner</span>
       </div>
       <nav class="nav-links" aria-label="Primary links">
         <a href="https://github.com/SalyyS1/foliascan">GitHub Repository</a>
@@ -921,6 +921,46 @@
         why: "A world border encompasses all chunk regions within a World. Modifying WorldBorder from an arbitrary regional thread races with neighbor regions calculating entity collision and border packet updates.",
         fix: "Dispatch WorldBorder configuration changes to Bukkit.getGlobalRegionScheduler().execute(plugin, () -> world.getWorldBorder().setSize(...)).",
         provenance: "0001-Region-Threading-Base.patch (CraftWorldBorder & RegionizedWorldData world-wide border broadcasts)"
+      },
+      FS096: {
+        id: "FS096",
+        severity: "WARNING",
+        title: "MapView configuration mutated from off-region context risks ConcurrentModificationException",
+        why: "Folia's global region tick iterates CraftMapView renderers and map center/locked state while updating maps for all online players. Calling addRenderer, removeRenderer, setLocked, setCenterX, setCenterZ, setScale, or setWorld from an async task or non-global regional tick races with that iteration.",
+        fix: "Perform all MapView mutations on Bukkit.getGlobalRegionScheduler().execute(plugin, () -> mapView.addRenderer(r)).",
+        provenance: "0001-Region-Threading-Base.patch (CraftMapView#renderers and CraftMap packet dispatch in global region tick)"
+      },
+      FS097: {
+        id: "FS097",
+        severity: "WARNING",
+        title: "Server-wide broadcast called from regional tick context risks cross-region packet race",
+        why: "broadcastMessage and broadcast on Bukkit/Server dispatch packets to every online player. On Folia, online players are owned by independent regional tick threads. Broadcasting from a RegionScheduler callback touches players across foreign regions, risking packet ordering violations.",
+        fix: "Move server-wide broadcasts to Bukkit.getGlobalRegionScheduler().execute(plugin, () -> Bukkit.broadcastMessage(msg)).",
+        provenance: "0001-Region-Threading-Base.patch (CraftServer#broadcastMessage and CraftServer#broadcast player packet dispatch)"
+      },
+      FS098: {
+        id: "FS098",
+        severity: "WARNING",
+        title: "ServicesManager register/unregister from async context risks unsynchronized registry mutation",
+        why: "In Folia, ServicesManager#register and #unregister mutate a shared service registry without synchronization guarantees across region threads. Calling them from an async task while another plugin reads the registry from a tick thread causes a data race.",
+        fix: "Perform ServicesManager mutations during plugin onEnable() or onDisable(), or dispatch to Bukkit.getGlobalRegionScheduler() if the registration must happen at runtime.",
+        provenance: "0001-Region-Threading-Base.patch (CraftServicesManager#register and #unregister: unsynchronized LinkedHashMap mutation)"
+      },
+      FS099: {
+        id: "FS099",
+        severity: "WARNING",
+        title: "Event handler (un)registration from async context races with concurrent Folia event dispatch",
+        why: "Folia dispatches events on independent regional tick threads, all reading the global HandlerList simultaneously. PluginManager#registerEvents, #unregisterEvents, and #unregisterAll mutate that shared list without region-safe synchronization, risking NPE, missed listeners, or double invocations.",
+        fix: "Register and unregister event listeners during plugin onEnable()/onDisable() or dispatch via Bukkit.getGlobalRegionScheduler().",
+        provenance: "0001-Region-Threading-Base.patch (HandlerList slot array: concurrent read by Folia region threads, unsynchronized write path)"
+      },
+      FS100: {
+        id: "FS100",
+        severity: "WARNING",
+        title: "BlockData setter called from async context risks read-modify-write race on block state descriptor",
+        why: "In Folia, Block#getBlockData returns a snapshot of the block palette entry. If that snapshot is captured and then mutated (setOpen, setFacing, setWaterlogged, etc.) from an async scheduler task before Block#setBlockData is called back on the region thread, the intermediate state is published without happens-before to the region.",
+        fix: "Perform the entire Block#getBlockData -> mutate -> Block#setBlockData sequence inside a single Bukkit.getRegionScheduler().execute(plugin, location, () -> { ... }) callback.",
+        provenance: "0001-Region-Threading-Base.patch (CraftBlock#getBlockData / setBlockData: region-guarded via TickThread.ensureTickThread)"
       }
     };
 
@@ -1893,6 +1933,56 @@
             (ref.name === "setCenter" || ref.name === "setSize" || ref.name === "setDamageAmount" || ref.name === "setDamageBuffer" || ref.name === "setWarningDistance" || ref.name === "setWarningTime")
           ) {
             emitOnce(RULES.FS095, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS096: MapView configuration mutation from async/off-region context
+          if (
+            classHasAsyncSignal &&
+            ref.owner === "org/bukkit/map/MapView" &&
+            (ref.name === "addRenderer" || ref.name === "removeRenderer" || ref.name === "setLocked" ||
+             ref.name === "setCenterX" || ref.name === "setCenterZ" || ref.name === "setScale" || ref.name === "setWorld")
+          ) {
+            emitOnce(RULES.FS096, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS097: Server-wide broadcast from regional tick context
+          if (
+            classHasAsyncSignal &&
+            (ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") &&
+            (ref.name === "broadcastMessage" || ref.name === "broadcast")
+          ) {
+            emitOnce(RULES.FS097, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS098: ServicesManager register/unregister from async context
+          if (
+            classHasAsyncSignal &&
+            ref.owner === "org/bukkit/plugin/ServicesManager" &&
+            (ref.name === "register" || ref.name === "unregister" || ref.name === "unregisterAll")
+          ) {
+            emitOnce(RULES.FS098, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS099: PluginManager event (un)registration from async context
+          if (
+            classHasAsyncSignal &&
+            ref.owner === "org/bukkit/plugin/PluginManager" &&
+            (ref.name === "registerEvents" || ref.name === "unregisterEvents" || ref.name === "unregisterAll")
+          ) {
+            emitOnce(RULES.FS099, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS100: BlockData setter from async context (read-modify-write race on block state descriptor)
+          if (
+            classHasAsyncSignal &&
+            (ref.owner === "org/bukkit/block/data/BlockData" || ref.owner.startsWith("org/bukkit/block/data/")) &&
+            (ref.name === "setOpen" || ref.name === "setFacing" || ref.name === "setWaterlogged" ||
+             ref.name === "setPowered" || ref.name === "setLit" || ref.name === "setEnabled" ||
+             ref.name === "setLevel" || ref.name === "setLayers" || ref.name === "setSnowy" ||
+             ref.name === "setAge" || ref.name === "setAttached" || ref.name === "setTriggered" ||
+             ref.name === "setType" || ref.name === "setAxis" || ref.name === "setInstrument" || ref.name === "setNote")
+          ) {
+            emitOnce(RULES.FS100, simpleOwner + "." + ref.name + "()", false);
           }
         }
 

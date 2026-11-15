@@ -1,5 +1,7 @@
 package org.bukkit.block
 
+import org.bukkit.block.data.BlockData
+
 interface BlockState {
     fun getDrops(): Collection<Any>
     fun update(force: Boolean): Boolean
@@ -34,11 +36,15 @@ interface Sign : TileState {
     fun setLine(index: Int, line: String)
 }
 
+enum class BlockFace { NORTH, SOUTH, EAST, WEST, UP, DOWN }
+
 interface Block {
     fun getBlockState(): BlockState
     fun getState(): BlockState
     fun breakNaturally(): Boolean
     fun getBiome(): String
     fun setBlockState(state: BlockState)
-    fun getType(): String
+    fun getType(): Any
+    fun getBlockData(): BlockData
+    fun setBlockData(data: BlockData)
 }

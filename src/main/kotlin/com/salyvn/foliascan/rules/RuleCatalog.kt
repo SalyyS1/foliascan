@@ -721,6 +721,153 @@ object RuleCatalog {
         contextual = true,
     )
 
+    // FS096-FS100: Folia v0.8.0 rules -------------------------------------------------------
+
+    /**
+     * MapView is backed by CraftMapView and its renderer list, center coordinates, locked state,
+     * and world reference are all accessed while the global region tick loop iterates over all
+     * loaded maps. Mutating them from an async task or a regional tick thread races with that
+     * iteration and can produce a ConcurrentModificationException or stale map state.
+     */
+    val mapViewAsyncMutation = CallRule(
+        id = "FS096",
+        severity = Severity.WARNING,
+        title = "MapView configuration mutated from off-region context risks ConcurrentModificationException",
+        why = "Folia's global region tick iterates CraftMapView#renderers and map center/locked state " +
+            "while updating maps for all online players. Calling addRenderer, removeRenderer, setLocked, " +
+            "setCenterX, setCenterZ, setScale, or setWorld from an async task or a non-global regional " +
+            "tick thread races with that iteration and can throw ConcurrentModificationException or " +
+            "silently drop renderer updates.",
+        fix = "Perform all MapView mutations on Bukkit.getGlobalRegionScheduler().execute(plugin, () -> mapView.addRenderer(r)).",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftMapView#renderers and CraftMap packet dispatch in global region tick",
+        ),
+        owners = setOf("org/bukkit/map/MapView"),
+        methods = setOf(
+            "addRenderer", "removeRenderer", "setLocked",
+            "setCenterX", "setCenterZ", "setScale", "setWorld",
+        ),
+        contextual = true,
+    )
+
+    /**
+     * Bukkit.broadcastMessage and Server.broadcast dispatch packets to every online player.
+     * In Folia, players are pinned to independent regional threads; broadcasting from a regional
+     * scheduler callback (which owns only one chunk group) crosses into other players' regions
+     * and races with their entity tick threads. The global region scheduler serialises the
+     * broadcast relative to the server-wide tick state.
+     */
+    val serverBroadcastFromRegion = CallRule(
+        id = "FS097",
+        severity = Severity.WARNING,
+        title = "Server-wide broadcast called from regional tick context risks cross-region packet race",
+        why = "broadcastMessage and broadcast on Bukkit/Server dispatch packets to every online " +
+            "player. On Folia, online players are owned by independent regional tick threads. " +
+            "Invoking a server-wide broadcast from a RegionScheduler callback touches players across " +
+            "foreign regions, risking cross-region packet ordering violations and player state corruption.",
+        fix = "Move server-wide broadcasts to Bukkit.getGlobalRegionScheduler().execute(plugin, " +
+            "() -> Bukkit.broadcastMessage(msg)) so the broadcast runs after all regions quiesce.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftServer#broadcastMessage and CraftServer#broadcast player packet dispatch across regions",
+        ),
+        owners = setOf("org/bukkit/Bukkit", "org/bukkit/Server"),
+        methods = setOf("broadcastMessage", "broadcast"),
+        contextual = true,
+    )
+
+    /**
+     * ServicesManager.register and unregister update a shared service registry that plugins
+     * query on any thread. Folia does not synchronize these mutations; calling them from an
+     * async task while another plugin reads the registry from a regional tick can produce a
+     * race on the underlying collection.
+     */
+    val servicesManagerAsyncMutation = CallRule(
+        id = "FS098",
+        severity = Severity.WARNING,
+        title = "ServicesManager register/unregister from async context risks unsynchronized registry mutation",
+        why = "In Folia, ServicesManager#register and #unregister mutate a shared service registry " +
+            "without synchronization guarantees across region threads. Calling them from an async " +
+            "task while another plugin reads the registry from a regional or global tick thread " +
+            "causes a data race on the internal service map.",
+        fix = "Perform ServicesManager mutations during plugin onEnable() or onDisable(), which run " +
+            "single-threaded, or dispatch to Bukkit.getGlobalRegionScheduler() if the registration " +
+            "must happen at runtime.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftServicesManager#register and #unregister: unsynchronized LinkedHashMap mutation",
+        ),
+        owners = setOf("org/bukkit/plugin/ServicesManager"),
+        methods = setOf("register", "unregister", "unregisterAll"),
+        contextual = true,
+    )
+
+    /**
+     * PluginManager.registerEvents and unregisterEvents/unregisterAll manipulate the global
+     * HandlerList slot table that every event dispatch path reads concurrently across all
+     * Folia region threads. Registering or unregistering handlers from an async task races
+     * with live event dispatch and can cause missed, double-fired, or NPE-throwing handler slots.
+     */
+    val pluginManagerEventRegistrationAsync = CallRule(
+        id = "FS099",
+        severity = Severity.WARNING,
+        title = "Event handler (un)registration from async context races with concurrent Folia event dispatch",
+        why = "Folia dispatches events on independent regional tick threads, all reading the global " +
+            "HandlerList simultaneously. PluginManager#registerEvents, #unregisterEvents, and " +
+            "#unregisterAll mutate that shared list without region-safe synchronization. Called from " +
+            "an async scheduler, they race with live event dispatch and can produce NPE, missed " +
+            "listeners, or double invocations.",
+        fix = "Register and unregister event listeners during plugin onEnable()/onDisable() (which " +
+            "run single-threaded) or dispatch the registration to " +
+            "Bukkit.getGlobalRegionScheduler().execute(plugin, () -> pm.registerEvents(listener, plugin)).",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "HandlerList slot array: concurrent read by Folia region threads, unsynchronized write path",
+        ),
+        owners = setOf("org/bukkit/plugin/PluginManager"),
+        methods = setOf("registerEvents", "unregisterEvents", "unregisterAll"),
+        contextual = true,
+    )
+
+    /**
+     * BlockData setters mutate the underlying block state descriptor. When a BlockData is obtained
+     * from a live block via Block#getBlockData and then passed into or captured by an async task
+     * that calls these setters before Block#setBlockData, the read-modify-write sequence spans
+     * two threads: the region tick thread that read the block and the async thread that mutates
+     * the descriptor. Folia does not lock BlockData objects across threads; the mutation races
+     * with any concurrent region tick that also reads the same descriptor from the block palette.
+     */
+    val blockDataAsyncSetterRace = CallRule(
+        id = "FS100",
+        severity = Severity.WARNING,
+        title = "BlockData setter called from async context risks read-modify-write race on block state descriptor",
+        why = "In Folia, Block#getBlockData returns a snapshot of the block palette entry. If that " +
+            "snapshot is captured and then mutated (setOpen, setFacing, setWaterlogged, setBisected, " +
+            "setHalf, setPowered, setLit, setDraggable, setEnabled, setExt, setLevel, setLayers, " +
+            "setType, setSnowy, setAge, setAttached, setTriggered) from an async scheduler task " +
+            "before Block#setBlockData is called back on the region thread, the intermediate state " +
+            "is published without happens-before to the region, violating Folia's region-ownership " +
+            "model for block palette access.",
+        fix = "Perform the entire Block#getBlockData -> mutate -> Block#setBlockData sequence inside " +
+            "a single Bukkit.getRegionScheduler().execute(plugin, location, () -> { ... }) callback " +
+            "so the read-modify-write is atomic relative to the region tick.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftBlock#getBlockData / setBlockData: region-guarded via TickThread.ensureTickThread; " +
+                "BlockData mutation objects are not thread-confined",
+        ),
+        owners = setOf("org/bukkit/block/data/BlockData"),
+        ownerPrefixes = setOf("org/bukkit/block/data/"),
+        methods = setOf(
+            "setOpen", "setFacing", "setWaterlogged", "setBisected", "setHalf",
+            "setPowered", "setLit", "setDraggable", "setEnabled", "setExt",
+            "setLevel", "setLayers", "setSnowy", "setAge", "setAttached", "setTriggered",
+            "setType", "setAxis", "setFluidLevel", "setInstrument", "setNote",
+        ),
+        contextual = true,
+    )
+
     // --- assembled views -----------------------------------------------------------------
 
     val manifestRules: List<ManifestRule> = listOf(foliaSupportFlag)
@@ -756,6 +903,11 @@ object RuleCatalog {
         crossRegionInventoryHolderCreation,
         bossBarMultiRegionDispatch,
         worldBorderRegionalMutation,
+        mapViewAsyncMutation,
+        serverBroadcastFromRegion,
+        servicesManagerAsyncMutation,
+        pluginManagerEventRegistrationAsync,
+        blockDataAsyncSetterRace,
     )
 
     val all: List<Rule> =

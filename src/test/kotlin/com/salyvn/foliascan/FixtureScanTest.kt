@@ -5,6 +5,7 @@ import com.salyvn.foliascan.scan.JarScanner
 import com.salyvn.foliascan.scan.ScanOptions
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -550,5 +551,73 @@ class FixtureScanTest {
         assertTrue(finding.evidence.contains("WorldBorder.setSize()"))
         assertTrue(finding.context?.contains("AsyncScheduler") == true)
         assertFalse(report.findings.any { it.location.method?.contains("safeWorldBorderGlobal") == true })
+    }
+
+    @Test
+    fun `v080 fixture flags FS096 MapView addRenderer from async while sparing GlobalRegionScheduler`() {
+        val report = scanner.scan(FixtureJars.v080())
+        val fs096 = report.findings.filter { it.ruleId == "FS096" }
+        assertTrue(fs096.isNotEmpty()) { "expected at least 1 FS096 finding, got: $fs096" }
+        val addRendererFinding = fs096.firstOrNull { it.location.method?.contains("unsafeMapViewAddRendererAsync") == true }
+        assertNotNull(addRendererFinding) { "expected FS096 on unsafeMapViewAddRendererAsync" }
+        assertTrue(addRendererFinding!!.evidence.contains("MapView.addRenderer()"))
+        assertTrue(addRendererFinding.context?.contains("AsyncScheduler") == true)
+        assertFalse(report.findings.any { it.ruleId == "FS096" && it.location.method?.contains("safeMapViewGlobal") == true })
+    }
+
+    @Test
+    fun `v080 fixture flags FS096 MapView setLocked from async`() {
+        val report = scanner.scan(FixtureJars.v080())
+        val fs096locked = report.findings.filter {
+            it.ruleId == "FS096" && it.location.method?.contains("unsafeMapViewSetLockedAsync") == true
+        }
+        assertTrue(fs096locked.isNotEmpty()) { "expected FS096 on unsafeMapViewSetLockedAsync, got: $fs096locked" }
+        assertTrue(fs096locked.first().evidence.contains("MapView.setLocked()"))
+    }
+
+    @Test
+    fun `v080 fixture flags FS097 broadcastMessage from async while sparing GlobalRegionScheduler`() {
+        val report = scanner.scan(FixtureJars.v080())
+        val fs097 = report.findings.filter { it.ruleId == "FS097" }
+        assertTrue(fs097.size >= 2) { "expected at least 2 FS097 findings (broadcastMessage + broadcast), got: $fs097" }
+        val broadcastMsg = fs097.firstOrNull { it.location.method?.contains("unsafeBroadcastMessageAsync") == true }
+        assertNotNull(broadcastMsg) { "expected FS097 on unsafeBroadcastMessageAsync" }
+        assertTrue(broadcastMsg!!.context?.contains("AsyncScheduler") == true)
+        assertFalse(report.findings.any { it.ruleId == "FS097" && it.location.method?.contains("safeBroadcastGlobal") == true })
+    }
+
+    @Test
+    fun `v080 fixture flags FS098 ServicesManager unregisterAll from async`() {
+        val report = scanner.scan(FixtureJars.v080())
+        val fs098 = report.findings.filter { it.ruleId == "FS098" }
+        assertTrue(fs098.isNotEmpty()) { "expected at least 1 FS098 finding, got: $fs098" }
+        val finding = fs098.firstOrNull { it.location.method?.contains("unsafeServicesUnregisterAsync") == true }
+        assertNotNull(finding) { "expected FS098 on unsafeServicesUnregisterAsync" }
+        assertTrue(finding!!.evidence.contains("ServicesManager.unregisterAll()"))
+        assertTrue(finding.context?.contains("AsyncScheduler") == true)
+    }
+
+    @Test
+    fun `v080 fixture flags FS099 registerEvents from async while sparing GlobalRegionScheduler`() {
+        val report = scanner.scan(FixtureJars.v080())
+        val fs099 = report.findings.filter { it.ruleId == "FS099" }
+        assertTrue(fs099.isNotEmpty()) { "expected at least 1 FS099 finding, got: $fs099" }
+        val registerFinding = fs099.firstOrNull { it.location.method?.contains("unsafeRegisterEventsAsync") == true }
+        assertNotNull(registerFinding) { "expected FS099 on unsafeRegisterEventsAsync" }
+        assertTrue(registerFinding!!.evidence.contains("PluginManager.registerEvents()"))
+        assertTrue(registerFinding.context?.contains("AsyncScheduler") == true)
+        assertFalse(report.findings.any { it.ruleId == "FS099" && it.location.method?.contains("safeRegisterEventsGlobal") == true })
+    }
+
+    @Test
+    fun `v080 fixture flags FS100 BlockData setWaterlogged from async while sparing region scheduler`() {
+        val report = scanner.scan(FixtureJars.v080())
+        val fs100 = report.findings.filter { it.ruleId == "FS100" }
+        assertTrue(fs100.isNotEmpty()) { "expected at least 1 FS100 finding, got: $fs100" }
+        val waterloggedFinding = fs100.firstOrNull { it.location.method?.contains("unsafeBlockDataMutationAsync") == true }
+        assertNotNull(waterloggedFinding) { "expected FS100 on unsafeBlockDataMutationAsync" }
+        assertTrue(waterloggedFinding!!.evidence.contains("BlockData.setWaterlogged()"))
+        assertTrue(waterloggedFinding.context?.contains("AsyncScheduler") == true)
+        assertFalse(report.findings.any { it.ruleId == "FS100" && it.location.method?.contains("safeBlockDataOnRegion") == true })
     }
 }

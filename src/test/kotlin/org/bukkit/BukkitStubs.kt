@@ -7,6 +7,8 @@ import org.bukkit.block.Block
 import org.bukkit.entity.Player
 import org.bukkit.generator.WorldInfo
 import org.bukkit.persistence.PersistentDataContainer
+import org.bukkit.plugin.PluginManager
+import org.bukkit.plugin.ServicesManager
 import org.bukkit.scheduler.BukkitScheduler
 import org.bukkit.scoreboard.ScoreboardManager
 import io.papermc.paper.threadedregions.scheduler.AsyncScheduler
@@ -52,6 +54,8 @@ interface Server {
     fun createWorld(name: String): World?
     fun getTPS(): DoubleArray
     fun createInventory(owner: Any?, size: Int, title: String): Any
+    fun broadcastMessage(message: String): Int
+    fun broadcast(message: String, permission: String): Int
 }
 
 @Suppress("unused")
@@ -87,6 +91,12 @@ object Bukkit {
     fun dispatchCommand(sender: Any, command: String): Boolean = false
 
     @JvmStatic
+    fun broadcastMessage(message: String): Int = 0
+
+    @JvmStatic
+    fun broadcast(message: String, permission: String): Int = 0
+
+    @JvmStatic
     fun isPrimaryThread(): Boolean = false
 
     @JvmStatic
@@ -97,4 +107,10 @@ object Bukkit {
 
     @JvmStatic
     fun getAsyncScheduler(): AsyncScheduler = throw UnsupportedOperationException()
+
+    @JvmStatic
+    fun getPluginManager(): PluginManager = throw UnsupportedOperationException()
+
+    @JvmStatic
+    fun getServicesManager(): ServicesManager = throw UnsupportedOperationException()
 }
