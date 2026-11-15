@@ -6,6 +6,7 @@ package org.bukkit
 import org.bukkit.block.Block
 import org.bukkit.entity.Player
 import org.bukkit.generator.WorldInfo
+import org.bukkit.persistence.PersistentDataContainer
 import org.bukkit.scheduler.BukkitScheduler
 import org.bukkit.scoreboard.ScoreboardManager
 import io.papermc.paper.threadedregions.scheduler.AsyncScheduler
@@ -17,9 +18,16 @@ class Location(val world: World?, val x: Double, val y: Double, val z: Double) {
     fun getBlock(): Block = throw UnsupportedOperationException()
 }
 
+interface WorldBorder {
+    fun setCenter(x: Double, z: Double)
+    fun setSize(newSize: Double)
+    fun setWarningDistance(distance: Int)
+}
+
 interface Chunk {
     fun getEntities(): Array<Any>
     fun load(): Boolean
+    fun getPersistentDataContainer(): PersistentDataContainer
 }
 
 interface World : WorldInfo {
@@ -35,12 +43,15 @@ interface World : WorldInfo {
     fun getTickableTileEntityCount(): Int
     fun getHighestBlockYAt(x: Int, z: Int): Int
     fun getNearbyEntities(location: Location, x: Double, y: Double, z: Double): Collection<Any>
+    fun getWorldBorder(): WorldBorder
+    fun getPersistentDataContainer(): PersistentDataContainer
 }
 
 interface Server {
     fun getScheduler(): BukkitScheduler
     fun createWorld(name: String): World?
     fun getTPS(): DoubleArray
+    fun createInventory(owner: Any?, size: Int, title: String): Any
 }
 
 @Suppress("unused")
@@ -53,6 +64,9 @@ object Bukkit {
 
     @JvmStatic
     fun getOnlinePlayers(): Collection<Player> = emptyList()
+
+    @JvmStatic
+    fun createInventory(owner: Any?, size: Int, title: String): Any = throw UnsupportedOperationException()
 
     @JvmStatic
     fun createWorld(name: String): World? = null

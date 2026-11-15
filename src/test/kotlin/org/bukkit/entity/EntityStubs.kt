@@ -1,6 +1,7 @@
 package org.bukkit.entity
 
 import org.bukkit.Location
+import org.bukkit.persistence.PersistentDataContainer
 import org.bukkit.scoreboard.Scoreboard
 import io.papermc.paper.threadedregions.scheduler.EntityScheduler
 import java.util.concurrent.CompletableFuture
@@ -14,6 +15,7 @@ interface Entity {
     fun removePassenger(passenger: Entity): Boolean
     fun eject(): Boolean
     fun leaveVehicle(): Boolean
+    fun getPersistentDataContainer(): PersistentDataContainer
 }
 
 interface LivingEntity : Entity {

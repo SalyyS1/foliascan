@@ -626,6 +626,101 @@ object RuleCatalog {
         ),
     )
 
+    val persistentDataContainerOffRegion = CallRule(
+        id = "FS091",
+        severity = Severity.WARNING,
+        title = "PersistentDataContainer mutation from an off-region or asynchronous context",
+        why = "In Paper and Folia, PersistentDataContainer (PDC) instances on Chunk, World, and Entity " +
+            "are backed directly by NMS compound tags within live regional chunk and entity data. Calling " +
+            "set(), remove(), readFromBytes(), or copyTo() from an async scheduler, packet listener, or " +
+            "foreign region races with Moonrise chunk persistence and entity serialization, causing " +
+            "ConcurrentModificationException and persistent NBT corruption.",
+        fix = "Dispatch PDC mutations through the owning region scheduler: Bukkit.getRegionScheduler().execute(...) " +
+            "for chunk/world data, or entity.getScheduler().execute(...) for entity data.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftPersistentDataContainer and RegionizedWorldData chunk/entity NBT compound writes",
+        ),
+        owners = setOf("org/bukkit/persistence/PersistentDataContainer"),
+        methods = setOf("set", "remove", "readFromBytes", "copyTo"),
+        contextual = true,
+    )
+
+    val multiRegionStructurePlace = CallRule(
+        id = "FS092",
+        severity = Severity.WARNING,
+        title = "Structure.place called across potentially unbounded regional chunk boundaries",
+        why = "In Paper and Folia 26.3+, org.bukkit.structure.Structure#place pastes multi-block templates, tile entities, " +
+            "and entity palettes synchronously across potentially unbounded chunk coordinates. When placed from a single region " +
+            "tick thread or off-region task across chunk region boundaries, Folia throws " +
+            "IllegalStateException: Asynchronous chunk access! Region does not own chunk... or deadlocks when neighbor " +
+            "chunks belong to a different region thread.",
+        fix = "Pre-calculate structure bounding boxes with Structure#getSize(); partition placement into chunk-aligned " +
+            "slices and schedule each slice via Bukkit.getRegionScheduler() at the target chunk coordinate.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftStructure#place and RegionizedWorldData chunk bounds check",
+        ),
+        owners = setOf("org/bukkit/structure/Structure"),
+        methods = setOf("place"),
+        contextual = false,
+    )
+
+    val crossRegionInventoryHolderCreation = CallRule(
+        id = "FS093",
+        severity = Severity.WARNING,
+        title = "Bukkit.createInventory with world-bound TileState or Entity holder creates cross-region viewer hazard",
+        why = "Passing a world-bound BlockState, TileState (Chest, Hopper, etc.), or Entity as the InventoryHolder " +
+            "to Bukkit.createInventory binds container click and viewer events across players and regions. In Folia, " +
+            "when players in separate regions open or click inside this inventory, event dispatches and getHolder() " +
+            "invocations trigger cross-region thread safety exceptions.",
+        fix = "Pass null or a detached virtual InventoryHolder to Bukkit.createInventory, and synchronize item interactions " +
+            "explicitly via Location or Entity schedulers.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftServer#createInventory and InventoryHolder event dispatch",
+        ),
+        owners = setOf("org/bukkit/Bukkit", "org/bukkit/Server"),
+        methods = setOf("createInventory"),
+        contextual = true,
+    )
+
+    val bossBarMultiRegionDispatch = CallRule(
+        id = "FS094",
+        severity = Severity.WARNING,
+        title = "BossBar player management from regional context risks cross-region packet contention",
+        why = "In Folia, players are distributed across independent region threads. Invoking BossBar#addPlayer, " +
+            "removePlayer, or removeAll from a regional tick thread directly touches player packet listeners across " +
+            "foreign regions, risking packet reordering and client disconnects.",
+        fix = "Manage server-wide BossBars via Bukkit.getGlobalRegionScheduler().execute(plugin, () -> bossBar.addPlayer(player)) " +
+            "or player.getScheduler().execute(plugin, () -> bossBar.addPlayer(player), null, 1L).",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftBossBar and ServerCommonPacketListenerImpl packet dispatch",
+        ),
+        owners = setOf("org/bukkit/boss/BossBar", "org/bukkit/boss/KeyedBossBar"),
+        ownerPrefixes = setOf("org/bukkit/boss/"),
+        methods = setOf("addPlayer", "removePlayer", "removeAll"),
+        contextual = true,
+    )
+
+    val worldBorderRegionalMutation = CallRule(
+        id = "FS095",
+        severity = Severity.WARNING,
+        title = "WorldBorder mutation from regional thread risks concurrent border state desync",
+        why = "In Folia, a world border encompasses all chunk regions within a World. Calling setCenter(), " +
+            "setSize(), or setWarningDistance() on WorldBorder from an arbitrary regional thread races with " +
+            "neighbor regions calculating entity collision and border packet updates.",
+        fix = "Dispatch WorldBorder configuration changes to Bukkit.getGlobalRegionScheduler().execute(plugin, () -> world.getWorldBorder().setSize(...)).",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftWorldBorder and RegionizedWorldData world-wide border broadcasts",
+        ),
+        owners = setOf("org/bukkit/WorldBorder"),
+        methods = setOf("setCenter", "setSize", "setDamageAmount", "setDamageBuffer", "setWarningDistance", "setWarningTime"),
+        contextual = true,
+    )
+
     // --- assembled views -----------------------------------------------------------------
 
     val manifestRules: List<ManifestRule> = listOf(foliaSupportFlag)
@@ -656,6 +751,11 @@ object RuleCatalog {
         onlinePlayersDirectMutation,
         crossRegionInventory,
         blockEntityOffRegionAccess,
+        persistentDataContainerOffRegion,
+        multiRegionStructurePlace,
+        crossRegionInventoryHolderCreation,
+        bossBarMultiRegionDispatch,
+        worldBorderRegionalMutation,
     )
 
     val all: List<Rule> =

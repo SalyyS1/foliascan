@@ -140,7 +140,7 @@ class FindingCollector(
         for (rule in RuleCatalog.callRules) {
             if (!enabled(rule) || !rule.matches(insn.owner, insn.name)) continue
             if (rule.contextual && context == null) continue
-            if (rule.contextual && context?.isGlobalTick == true && (rule.id == "FS050" || rule.id == "FS064")) continue
+            if (rule.contextual && context?.isGlobalTick == true && (rule.id == "FS050" || rule.id == "FS064" || rule.id == "FS094" || rule.id == "FS095")) continue
             val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, context?.takeIf { rule.contextual })
             out += finding(
                 rule = rule,

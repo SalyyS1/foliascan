@@ -524,7 +524,7 @@
     <div class="topbar-inner">
       <div class="brand">
         <span>FoliaScan</span>
-        <span class="brand-tag">v0.6.0 Browser Bytecode Scanner</span>
+        <span class="brand-tag">v0.7.0 Browser Bytecode Scanner</span>
       </div>
       <nav class="nav-links" aria-label="Primary links">
         <a href="https://github.com/SalyyS1/foliascan">GitHub Repository</a>
@@ -881,6 +881,46 @@
         why: "Capturing a pre-fetched BlockState or TileState into RegionScheduler.runDelayed / runAtFixedRate or EntityScheduler callbacks uses stale block-entity snapshots across regional ticks or across entity region boundaries.",
         fix: "Capture an immutable Location, schedule on Bukkit.getRegionScheduler() for that Location, and re-fetch location.getBlock().getState() inside the scheduled tick.",
         provenance: "0001-Region-Threading-Base.patch (RegionizedWorldData#tickBlockEntities & EntityScheduler vs RegionScheduler)"
+      },
+      FS091: {
+        id: "FS091",
+        severity: "WARNING",
+        title: "PersistentDataContainer mutation from an off-region or asynchronous context",
+        why: "PersistentDataContainer instances on Chunk, World, and Entity are backed directly by NMS compound tags within live regional data. Mutating PDC off-region races with Moonrise chunk persistence and entity serialization.",
+        fix: "Dispatch PDC mutations through the owning region scheduler: Bukkit.getRegionScheduler().execute(...) for chunk/world data, or entity.getScheduler().execute(...) for entity data.",
+        provenance: "0001-Region-Threading-Base.patch (CraftPersistentDataContainer & RegionizedWorldData chunk/entity NBT)"
+      },
+      FS092: {
+        id: "FS092",
+        severity: "WARNING",
+        title: "Structure.place called across potentially unbounded regional chunk boundaries",
+        why: "Structure#place pastes multi-block templates and entity palettes synchronously across potentially unbounded chunk coordinates, risking IllegalStateException or deadlocks across independent region threads.",
+        fix: "Pre-calculate structure bounding boxes with Structure#getSize(); partition placement into chunk-aligned slices and schedule each slice via Bukkit.getRegionScheduler().",
+        provenance: "0001-Region-Threading-Base.patch (CraftStructure#place & RegionizedWorldData chunk bounds check)"
+      },
+      FS093: {
+        id: "FS093",
+        severity: "WARNING",
+        title: "Bukkit.createInventory with world-bound TileState or Entity holder creates cross-region viewer hazard",
+        why: "Passing a world-bound BlockState, TileState, or Entity to Bukkit.createInventory binds container click and viewer events across players and regions, risking cross-region thread safety exceptions.",
+        fix: "Pass null or a detached virtual InventoryHolder to Bukkit.createInventory, and synchronize item interactions explicitly via Location or Entity schedulers.",
+        provenance: "0001-Region-Threading-Base.patch (CraftServer#createInventory & InventoryHolder event dispatch)"
+      },
+      FS094: {
+        id: "FS094",
+        severity: "WARNING",
+        title: "BossBar player management from regional context risks cross-region packet contention",
+        why: "Players are distributed across independent region threads. Invoking BossBar#addPlayer, removePlayer, or removeAll from a regional tick thread directly touches player packet listeners across foreign regions.",
+        fix: "Manage server-wide BossBars via Bukkit.getGlobalRegionScheduler().execute(plugin, () -> bossBar.addPlayer(player)) or player.getScheduler().execute(plugin, () -> bossBar.addPlayer(player), null, 1L).",
+        provenance: "0001-Region-Threading-Base.patch (CraftBossBar & ServerCommonPacketListenerImpl packet dispatch)"
+      },
+      FS095: {
+        id: "FS095",
+        severity: "WARNING",
+        title: "WorldBorder mutation from regional thread risks concurrent border state desync",
+        why: "A world border encompasses all chunk regions within a World. Modifying WorldBorder from an arbitrary regional thread races with neighbor regions calculating entity collision and border packet updates.",
+        fix: "Dispatch WorldBorder configuration changes to Bukkit.getGlobalRegionScheduler().execute(plugin, () -> world.getWorldBorder().setSize(...)).",
+        provenance: "0001-Region-Threading-Base.patch (CraftWorldBorder & RegionizedWorldData world-wide border broadcasts)"
       }
     };
 
@@ -1809,6 +1849,50 @@
           // FS089: Off-region TileState / Container block-entity access
           if (classHasAsyncSignal && TILE_ENTITY_OWNERS.has(ref.owner)) {
             emitOnce(RULES.FS089, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS091: PersistentDataContainer mutation in off-region context
+          if (
+            classHasAsyncSignal &&
+            ref.owner === "org/bukkit/persistence/PersistentDataContainer" &&
+            (ref.name === "set" || ref.name === "remove" || ref.name === "readFromBytes" || ref.name === "copyTo")
+          ) {
+            emitOnce(RULES.FS091, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS092: Structure.place across unbounded regional chunk boundaries
+          if (
+            ref.owner === "org/bukkit/structure/Structure" &&
+            ref.name === "place"
+          ) {
+            emitOnce(RULES.FS092, simpleOwner + ".place()", false);
+          }
+
+          // FS093: Bukkit.createInventory in off-region context
+          if (
+            classHasAsyncSignal &&
+            (ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") &&
+            ref.name === "createInventory"
+          ) {
+            emitOnce(RULES.FS093, simpleOwner + ".createInventory()", false);
+          }
+
+          // FS094: BossBar player management in off-region context
+          if (
+            classHasAsyncSignal &&
+            (ref.owner.startsWith("org/bukkit/boss/") || ref.owner === "org/bukkit/boss/BossBar") &&
+            (ref.name === "addPlayer" || ref.name === "removePlayer" || ref.name === "removeAll")
+          ) {
+            emitOnce(RULES.FS094, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS095: WorldBorder regional mutation
+          if (
+            classHasAsyncSignal &&
+            ref.owner === "org/bukkit/WorldBorder" &&
+            (ref.name === "setCenter" || ref.name === "setSize" || ref.name === "setDamageAmount" || ref.name === "setDamageBuffer" || ref.name === "setWarningDistance" || ref.name === "setWarningTime")
+          ) {
+            emitOnce(RULES.FS095, simpleOwner + "." + ref.name + "()", false);
           }
         }
 

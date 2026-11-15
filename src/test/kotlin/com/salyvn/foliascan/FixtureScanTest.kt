@@ -494,4 +494,61 @@ class FixtureScanTest {
             "Location-captured delayed RegionScheduler task re-fetching BlockState was falsely flagged: ${report.findings}"
         }
     }
+
+    @Test
+    fun `v070 fixture flags FS091 PDC mutations in off-region context while sparing RegionScheduler execution`() {
+        val report = scanner.scan(FixtureJars.v070())
+        val fs091 = report.findings.filter { it.ruleId == "FS091" }
+        assertEquals(1, fs091.size) { "expected 1 FS091 finding, got: $fs091" }
+        val finding = fs091.single()
+        assertTrue(finding.location.method?.startsWith("unsafePdcOffRegion") == true)
+        assertTrue(finding.evidence.contains("PersistentDataContainer.set()"))
+        assertTrue(finding.context?.contains("AsyncScheduler") == true)
+        assertFalse(report.findings.any { it.location.method?.contains("safePdcOnRegion") == true })
+    }
+
+    @Test
+    fun `v070 fixture flags FS092 Structure place unconditionally`() {
+        val report = scanner.scan(FixtureJars.v070())
+        val fs092 = report.findings.filter { it.ruleId == "FS092" }
+        assertEquals(1, fs092.size) { "expected 1 FS092 finding, got: $fs092" }
+        val finding = fs092.single()
+        assertEquals("unsafeStructurePlace", finding.location.method)
+        assertTrue(finding.evidence.contains("Structure.place()"))
+    }
+
+    @Test
+    fun `v070 fixture flags FS093 Bukkit createInventory in off-region context`() {
+        val report = scanner.scan(FixtureJars.v070())
+        val fs093 = report.findings.filter { it.ruleId == "FS093" }
+        assertEquals(1, fs093.size) { "expected 1 FS093 finding, got: $fs093" }
+        val finding = fs093.single()
+        assertTrue(finding.location.method?.startsWith("unsafeCreateInventoryOffRegion") == true)
+        assertTrue(finding.evidence.contains("Bukkit.createInventory()"))
+        assertTrue(finding.context?.contains("AsyncScheduler") == true)
+    }
+
+    @Test
+    fun `v070 fixture flags FS094 BossBar player management off-region while sparing GlobalRegionScheduler`() {
+        val report = scanner.scan(FixtureJars.v070())
+        val fs094 = report.findings.filter { it.ruleId == "FS094" }
+        assertEquals(1, fs094.size) { "expected 1 FS094 finding, got: $fs094" }
+        val finding = fs094.single()
+        assertTrue(finding.location.method?.startsWith("unsafeBossBarOffRegion") == true)
+        assertTrue(finding.evidence.contains("BossBar.addPlayer()"))
+        assertTrue(finding.context?.contains("AsyncScheduler") == true)
+        assertFalse(report.findings.any { it.location.method?.contains("safeBossBarGlobal") == true })
+    }
+
+    @Test
+    fun `v070 fixture flags FS095 WorldBorder mutation off-region while sparing GlobalRegionScheduler`() {
+        val report = scanner.scan(FixtureJars.v070())
+        val fs095 = report.findings.filter { it.ruleId == "FS095" }
+        assertEquals(1, fs095.size) { "expected 1 FS095 finding, got: $fs095" }
+        val finding = fs095.single()
+        assertTrue(finding.location.method?.startsWith("unsafeWorldBorderOffRegion") == true)
+        assertTrue(finding.evidence.contains("WorldBorder.setSize()"))
+        assertTrue(finding.context?.contains("AsyncScheduler") == true)
+        assertFalse(report.findings.any { it.location.method?.contains("safeWorldBorderGlobal") == true })
+    }
 }

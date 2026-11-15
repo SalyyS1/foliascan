@@ -119,6 +119,14 @@ object FixtureJars {
         foliaSupported = true,
     )
 
+    /** Exercises v0.7.0 PersistentDataContainer (FS091), Structure.place (FS092), createInventory (FS093), BossBar (FS094), and WorldBorder (FS095). */
+    fun v070(): Path = build(
+        jarName = "v070-plugin",
+        packagePath = "fixtures/v070/",
+        main = "fixtures.v070.V070Plugin",
+        foliaSupported = true,
+    )
+
     private fun build(
         jarName: String,
         main: String?,
