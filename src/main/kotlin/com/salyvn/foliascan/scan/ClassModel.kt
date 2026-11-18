@@ -50,11 +50,67 @@ data class Insn(
     val name: String,
     val desc: String,
     val line: Int?,
-    /** For [InsnKind.INDY]: the synthetic method the lambda body compiled into. */
+    /** For [InsnKind.INDY]: the synthetic method or method-reference target the closure invokes. */
     val lambdaTarget: MethodKey? = null,
     /** Raw JVM opcode when distinguishing getstatic/putstatic or monitorenter matters. */
     val opcode: Int = 0,
+    /** For [InsnKind.INDY]: internal names of reference types captured in the closure descriptor. */
+    val capturedTypes: List<String> = emptyList(),
+    /** For [InsnKind.INDY]: internal name of the SAM functional interface produced by the call site. */
+    val samInterface: String? = null,
+    /** For [InsnKind.INDY]: internal name of the bootstrap owner (e.g. java/lang/invoke/LambdaMetafactory). */
+    val bootstrapOwner: String? = null,
 )
+
+/** Minimal JVM method descriptor parser for parameter-slot and closure-capture analysis. */
+object JvmDescriptors {
+
+    fun parseParameterTypes(desc: String): List<String> {
+        if (!desc.startsWith("(")) return emptyList()
+        val end = desc.indexOf(')')
+        if (end <= 1) return emptyList()
+        val out = mutableListOf<String>()
+        var i = 1
+        while (i < end) {
+            val start = i
+            while (i < end && desc[i] == '[') i++
+            if (i >= end) break
+            if (desc[i] == 'L') {
+                val semi = desc.indexOf(';', i)
+                if (semi < 0 || semi > end) break
+                i = semi + 1
+            } else {
+                i += 1
+            }
+            out += desc.substring(start, i)
+        }
+        return out
+    }
+
+    fun parseReturnType(desc: String): String {
+        val end = desc.indexOf(')')
+        return if (end >= 0 && end + 1 < desc.length) desc.substring(end + 1) else ""
+    }
+
+    fun internalNameOfType(typeDesc: String): String? =
+        if (typeDesc.startsWith("L") && typeDesc.endsWith(";") && typeDesc.length > 2) {
+            typeDesc.substring(1, typeDesc.length - 1)
+        } else {
+            null
+        }
+
+    /** Maps JVM local-variable slot index to 0-based method parameter index (accounting for 2-slot J/D). */
+    fun parameterSlotMap(isStatic: Boolean, desc: String): Map<Int, Int> {
+        val params = parseParameterTypes(desc)
+        val map = LinkedHashMap<Int, Int>(params.size)
+        var slot = if (isStatic) 0 else 1
+        params.forEachIndexed { idx, typeDesc ->
+            map[slot] = idx
+            slot += if (typeDesc == "J" || typeDesc == "D") 2 else 1
+        }
+        return map
+    }
+}
 
 data class FieldModel(
     val name: String,

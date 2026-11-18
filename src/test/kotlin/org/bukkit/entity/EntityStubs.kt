@@ -20,6 +20,7 @@ interface Entity {
 
 interface LivingEntity : Entity {
     fun getHealth(): Double
+    fun setHealth(health: Double)
 }
 
 interface Player : LivingEntity {

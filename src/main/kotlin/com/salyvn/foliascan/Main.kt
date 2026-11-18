@@ -144,7 +144,10 @@ class FoliaScanCommand : CliktCommand(name = "foliascan") {
             return
         }
 
-        val report = Baseline.apply(raw, baselineIn?.let { Baseline.load(it) } ?: emptySet())
+        val report = Baseline.apply(
+            raw,
+            baselineIn?.let { Baseline.loadMatcher(it) } ?: com.salyvn.foliascan.report.BaselineMatcher(),
+        )
         val sarifRendered by lazy { SarifReporter.render(report) }
 
         sarifOut?.let { target ->

@@ -262,4 +262,63 @@ class ReportFormatTest {
                 .jsonObject["text"]!!.jsonPrimitive.content.startsWith("Concurrent scheduler entry:"),
         )
     }
+
+    @Test
+    fun `baseline v2 structuralHash survives synthetic lambda ordinal renumbering and emits SARIF v2 fingerprint`() {
+        val v100Report = ScanReport(
+            toolVersion = "1.0.0",
+            jars = listOf(JarScanner().scan(FixtureJars.v100())),
+        )
+        val baselinePath = Files.createTempFile("foliascan-v2-baseline-", ".json")
+        baselinePath.toFile().deleteOnExit()
+
+        Baseline.write(baselinePath, v100Report)
+        val matcher = Baseline.loadMatcher(baselinePath)
+        assertFalse(matcher.structuralHashes.isEmpty(), "expected SHA-256 structural hashes in v2 baseline")
+
+        // Simulate javac/kotlinc renumbering synthetic lambda$0 -> lambda$9 after an unrelated edit earlier in the file
+        val originalJar = v100Report.jars.single()
+        val renumberedFindings = originalJar.findings.map { f ->
+            val m = f.location.method
+            val shiftedMethod = when {
+                m != null && m.contains("\$lambda\$") -> m.substringBeforeLast('$') + "\$99"
+                m != null && m.startsWith("lambda\$") -> m.substringBeforeLast('$') + "\$99"
+                else -> m
+            }
+            val shiftedChain = f.callChain.map { hop ->
+                val hm = hop.method
+                val newHm = when {
+                    hm != null && hm.contains("\$lambda\$") -> hm.substringBeforeLast('$') + "\$99"
+                    hm != null && hm.startsWith("lambda\$") -> hm.substringBeforeLast('$') + "\$99"
+                    else -> hm
+                }
+                hop.copy(method = newHm)
+            }
+            f.copy(
+                location = f.location.copy(method = shiftedMethod, line = (f.location.line ?: 10) + 25),
+                callChain = shiftedChain,
+            )
+        }
+        assertTrue(
+            renumberedFindings.any { it.fingerprint() !in matcher.exactFingerprints },
+            "expected at least one lambda finding whose v1 exact fingerprint changed upon ordinal shift",
+        )
+
+        val shiftedReport = ScanReport(
+            toolVersion = "1.0.0",
+            jars = listOf(originalJar.copy(findings = renumberedFindings)),
+        )
+        val suppressed = Baseline.apply(shiftedReport, matcher)
+        assertTrue(suppressed.allFindings.isEmpty()) {
+            "v2 structuralHash failed to suppress renumbered lambda findings: ${suppressed.allFindings}"
+        }
+        assertTrue(
+            suppressed.jars.single().notes.any { it.contains("Suppressed ${renumberedFindings.size} baselined finding(s)") },
+        )
+
+        val sarif = Json.parseToJsonElement(SarifReporter.render(v100Report)).jsonObject
+        val firstResult = sarif["runs"]!!.jsonArray.single().jsonObject["results"]!!.jsonArray.first().jsonObject
+        val fps = firstResult["partialFingerprints"]!!.jsonObject
+        assertTrue(fps["foliascan/structuralHash/v2"]!!.jsonPrimitive.content.startsWith("sha256-16:"))
+    }
 }

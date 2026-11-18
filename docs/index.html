@@ -524,7 +524,7 @@
     <div class="topbar-inner">
       <div class="brand">
         <span>FoliaScan</span>
-        <span class="brand-tag">v0.9.0 Browser Bytecode Scanner</span>
+        <span class="brand-tag">v1.0.0 Browser Bytecode Scanner</span>
       </div>
       <nav class="nav-links" aria-label="Primary links">
         <a href="https://github.com/SalyyS1/foliascan">GitHub Repository</a>
@@ -602,6 +602,9 @@
             <button type="button" id="copyMdBtn">Copy Markdown</button>
             <button type="button" id="downloadMdBtn">Download .md</button>
             <button type="button" id="downloadJsonBtn">Export .json</button>
+            <button type="button" id="exportBaselineBtn">Export Baseline</button>
+            <button type="button" id="loadBaselineBtn">Load Baseline</button>
+            <input type="file" id="baselineInput" accept=".json,application/json" class="hidden">
           </div>
         </div>
         <div class="table-wrap">
@@ -1001,6 +1004,46 @@
         why: "Instance HashMap, LinkedHashMap, ArrayList, or HashSet fields on shared Plugin, Listener, or Service classes are accessed concurrently across RegionScheduler, EntityScheduler, and AsyncScheduler threads under Folia.",
         fix: "Replace instance HashMap / mutableMapOf fields with ConcurrentHashMap and ArrayList / mutableListOf with CopyOnWriteArrayList, or guard mutations with explicit synchronization.",
         provenance: "0002-Region-scheduler-API.patch (Concurrent multi-region invocation of shared Plugin, Listener, and Service instances)"
+      },
+      FS106: {
+        id: "FS106",
+        severity: "WARNING",
+        title: "Entity or Player captured into Location-keyed RegionScheduler closure risks spatial split-brain",
+        why: "RegionScheduler binds execution to the chunk region owning the target Location, not the region owning a captured Entity or Player. Mutating entity state or calling teleportAsync inside a Location-scheduled closure without Bukkit.isOwnedByCurrentRegion(entity) throws IllegalStateException if the entity is in another region.",
+        fix: "Dispatch entity mutations via entity.getScheduler().run(plugin, ...), or guard interactions with if (Bukkit.isOwnedByCurrentRegion(entity)).",
+        provenance: "0001-Region-Threading-Base.patch (CraftEntity#getHandle & CraftEntity#teleportAsync TickThread.ensureTickThread(entity))"
+      },
+      FS107: {
+        id: "FS107",
+        severity: "WARNING",
+        title: "Live Chunk reference captured across delayed RegionScheduler or EntityScheduler closure",
+        why: "Capturing a live org.bukkit.Chunk instance inside a RegionScheduler.runDelayed / runAtFixedRate lambda or an EntityScheduler callback holds a direct CraftChunk reference across tick boundaries and Moonrise region split/merge transitions.",
+        fix: "Capture immutable coordinates (world name, chunkX, chunkZ or Location) instead of a live Chunk, and re-acquire world.getChunkAt(chunkX, chunkZ) on the owning RegionScheduler tick.",
+        provenance: "0001-Region-Threading-Base.patch (CraftChunk TickThread.ensureTickThread guards & Moonrise region lifecycle)"
+      },
+      FS108: {
+        id: "FS108",
+        severity: "WARNING",
+        title: "Scoreboard Team, Objective, or Score mutated from off-region context",
+        why: "Mutating Team entries/prefixes, Objective display state, or Score values from an AsyncScheduler task, coroutine worker, or regional tick thread races with concurrent scoreboard reads and packet broadcasts across Folia threads.",
+        fix: "Schedule server-wide Team/Objective/Score updates on Bukkit.getGlobalRegionScheduler().execute(plugin, ...) or migrate per-player displays to packet-level bossbars and actionbars.",
+        provenance: "0001-Region-Threading-Base.patch (CraftTeam, CraftObjective, and CraftScore unsynchronized backing state)"
+      },
+      FS109: {
+        id: "FS109",
+        severity: "WARNING",
+        title: "AdvancementProgress criteria mutated from off-region or async context",
+        why: "CraftAdvancementProgress#awardCriteria and #revokeCriteria invoke NMS PlayerAdvancements#award and #revoke on the backing ServerPlayer under TickThread.ensureTickThread.",
+        fix: "Award or revoke advancement criteria inside player.getScheduler().run(plugin, task, null).",
+        provenance: "0001-Region-Threading-Base.patch (CraftAdvancementProgress#awardCriteria -> PlayerAdvancements#award)"
+      },
+      FS110: {
+        id: "FS110",
+        severity: "WARNING",
+        title: "LootTable.fillInventory or populateLoot evaluated from off-region context",
+        why: "CraftLootTable#fillInventory and #populateLoot construct NMS LootParams against live ServerLevel world/entity state and mutate target Inventory slots under TickThread.ensureTickThread.",
+        fix: "Invoke LootTable#fillInventory or #populateLoot inside Bukkit.getRegionScheduler().execute(plugin, originLocation, task).",
+        provenance: "0001-Region-Threading-Base.patch (CraftLootTable#fillInventory and #populateLoot ServerLevel region checks)"
       }
     };
 
@@ -2098,6 +2141,39 @@
           ) {
             emitOnce(RULES.FS104, simpleOwner + "." + ref.name + "()", true);
           }
+
+          // FS108: Scoreboard Team, Objective, or Score mutated off-region
+          if (
+            classHasAsyncSignal &&
+            (ref.owner === "org/bukkit/scoreboard/Team" ||
+             ref.owner === "org/bukkit/scoreboard/Objective" ||
+             ref.owner === "org/bukkit/scoreboard/Score") &&
+            (ref.name === "addEntry" || ref.name === "removeEntry" || ref.name === "addPlayer" ||
+             ref.name === "removePlayer" || ref.name === "setPrefix" || ref.name === "setSuffix" ||
+             ref.name === "prefix" || ref.name === "suffix" || ref.name === "setDisplayName" ||
+             ref.name === "displayName" || ref.name === "setScore" || ref.name === "resetScore" ||
+             ref.name === "unregister")
+          ) {
+            emitOnce(RULES.FS108, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS109: AdvancementProgress criteria mutated off-region
+          if (
+            classHasAsyncSignal &&
+            ref.owner === "org/bukkit/advancement/AdvancementProgress" &&
+            (ref.name === "awardCriteria" || ref.name === "revokeCriteria")
+          ) {
+            emitOnce(RULES.FS109, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS110: LootTable.fillInventory or populateLoot evaluated off-region
+          if (
+            classHasAsyncSignal &&
+            ref.owner === "org/bukkit/loot/LootTable" &&
+            (ref.name === "fillInventory" || ref.name === "populateLoot")
+          ) {
+            emitOnce(RULES.FS110, simpleOwner + "." + ref.name + "()", false);
+          }
         }
 
         // FS087: Blocking join/get on getChunkAtAsync* or teleportAsync futures
@@ -2151,6 +2227,36 @@
           });
           if (capturesTileInLambda) {
             emitOnce(RULES.FS090, "Captured BlockState/TileState parameter in scheduled task lambda", false);
+          }
+          const capturesChunkInLambda = model.declaredMethods.some((m) => {
+            if (!m.name.includes("lambda")) return false;
+            const params = m.descriptor.split(")")[0] || "";
+            return params.includes("Lorg/bukkit/Chunk;");
+          });
+          if (capturesChunkInLambda) {
+            emitOnce(RULES.FS107, "Captured Chunk parameter in delayed/entity scheduled task lambda", false);
+          }
+        }
+
+        // FS106: Captured Entity/Player inside Location-keyed RegionScheduler lambda without isOwnedByCurrentRegion
+        const hasLocationRegionSchedule = model.methodRefs.some((r) => r.owner.endsWith("/RegionScheduler"));
+        const hasRegionOwnershipCheck = model.methodRefs.some(
+          (r) => r.name === "isOwnedByCurrentRegion" || r.owner.endsWith("/EntityScheduler") || r.name === "getScheduler"
+        );
+        if (hasLocationRegionSchedule && !hasRegionOwnershipCheck) {
+          const capturesEntityInLambda = model.declaredMethods.some((m) => {
+            if (!m.name.includes("lambda")) return false;
+            const params = m.descriptor.split(")")[0] || "";
+            return params.includes("Lorg/bukkit/entity/") && !params.includes("Lorg/bukkit/entity/EntityType;");
+          });
+          const mutatesEntity = model.methodRefs.some(
+            (r) =>
+              r.owner.startsWith("org/bukkit/entity/") &&
+              (r.name === "setHealth" || r.name === "damage" || r.name === "setVelocity" ||
+               r.name === "teleportAsync" || r.name === "openInventory" || r.name === "getInventory")
+          );
+          if (capturesEntityInLambda && mutatesEntity) {
+            emitOnce(RULES.FS106, "Captured Entity/Player mutated inside Location-keyed RegionScheduler closure", false);
           }
         }
 
@@ -2652,6 +2758,7 @@
 
     let preparedJars = [];
     let currentReports = [];
+    let activeBaselineFingerprints = new Set();
 
     const dropzone = document.getElementById("dropzone");
     const fileInput = document.getElementById("fileInput");
@@ -2668,7 +2775,39 @@
     const copyMdBtn = document.getElementById("copyMdBtn");
     const downloadMdBtn = document.getElementById("downloadMdBtn");
     const downloadJsonBtn = document.getElementById("downloadJsonBtn");
+    const exportBaselineBtn = document.getElementById("exportBaselineBtn");
+    const loadBaselineBtn = document.getElementById("loadBaselineBtn");
+    const baselineInput = document.getElementById("baselineInput");
     const rulesRefBody = document.getElementById("rulesRefBody");
+
+    function findingFingerprint(f) {
+      return [f.ruleId, f.location.className, f.location.method || "-", f.evidence].join("|");
+    }
+
+    function applyBrowserBaseline(report) {
+      if (activeBaselineFingerprints.size === 0) return report;
+      const kept = [];
+      let suppressed = 0;
+      for (const f of report.findings) {
+        if (activeBaselineFingerprints.has(findingFingerprint(f))) {
+          suppressed += 1;
+        } else {
+          kept.push(f);
+        }
+      }
+      if (suppressed === 0) return report;
+      const counts = { BLOCKER: 0, CRITICAL: 0, WARNING: 0, INFO: 0 };
+      for (const f of kept) counts[f.severity] = (counts[f.severity] || 0) + 1;
+      const hasHardFail = counts.BLOCKER > 0 || counts.CRITICAL > 0;
+      const hasPatcher = kept.some((f) => f.ruleId === "FS002");
+      return {
+        ...report,
+        findings: kept,
+        counts,
+        status: hasHardFail ? "FAIL" : (hasPatcher ? "PATCHED" : "PASS"),
+        notes: [...report.notes, "Suppressed " + suppressed + " baselined finding(s)"]
+      };
+    }
 
     function el(tag, attrs = {}, children = []) {
       const node = document.createElement(tag);
@@ -2943,7 +3082,8 @@
       const scanShaded = scanShadedToggle.checked;
       const next = [];
       for (const prep of preparedJars) {
-        next.push(await scanPreparedJar(prep, scanShaded));
+        const raw = await scanPreparedJar(prep, scanShaded);
+        next.push(applyBrowserBaseline(raw));
       }
       currentReports = next;
       renderReports();
@@ -3070,11 +3210,43 @@
     downloadJsonBtn.addEventListener("click", () => {
       const payload = {
         tool: "foliascan-browser",
-        toolVersion: "0.5.0",
+        toolVersion: "1.0.0",
         scanShadedDependencies: scanShadedToggle.checked,
         jars: currentReports
       };
       downloadBlob("foliascan-report.json", JSON.stringify(payload, null, 2) + "\n", "application/json;charset=utf-8");
+    });
+
+    exportBaselineBtn.addEventListener("click", () => {
+      const fps = Array.from(
+        new Set(currentReports.flatMap((r) => r.findings.map(findingFingerprint)))
+      ).sort();
+      const baselinePayload = {
+        version: 2,
+        note: "Fingerprints accepted for this project. Remove entries as they get fixed.",
+        fingerprints: fps
+      };
+      downloadBlob("foliascan-baseline.json", JSON.stringify(baselinePayload, null, 2) + "\n", "application/json;charset=utf-8");
+    });
+
+    loadBaselineBtn.addEventListener("click", () => {
+      baselineInput.click();
+    });
+
+    baselineInput.addEventListener("change", async () => {
+      const file = baselineInput.files && baselineInput.files[0];
+      baselineInput.value = "";
+      if (!file) return;
+      try {
+        const parsed = JSON.parse(await file.text());
+        const fps = Array.isArray(parsed.fingerprints) ? parsed.fingerprints : [];
+        const entryFps = Array.isArray(parsed.entries) ? parsed.entries.map((e) => e.fingerprint).filter(Boolean) : [];
+        activeBaselineFingerprints = new Set([...fps, ...entryFps]);
+        await rescanAllPrepared();
+        setStatus("Loaded baseline with " + activeBaselineFingerprints.size + " suppression fingerprint(s).");
+      } catch (err) {
+        setStatus("Invalid baseline JSON: " + (err && err.message ? err.message : String(err)), true);
+      }
     });
 
     renderRulesCatalog();

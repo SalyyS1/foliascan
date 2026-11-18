@@ -59,14 +59,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.9.0.jar MyPlugin.jar
+java -jar foliascan-1.0.0.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.9.0.jar MyPlugin.jar
+java -jar build/libs/foliascan-1.0.0.jar MyPlugin.jar
 ```
 
 ## Usage
@@ -113,7 +113,7 @@ permissions:
   contents: read
   security-events: write
 steps:
-  - uses: SalyyS1/foliascan@v0.6.0
+  - uses: SalyyS1/foliascan@v1.0.0
     with:
       jar: build/libs/*.jar
       sarif-file: foliascan.sarif
@@ -136,14 +136,14 @@ and exits with FoliaScan's threshold exit code.
 | `disable` | `""` | Comma- or space-separated rule IDs to turn off (for example `FS063,FS070`) |
 | `all` | `false` | Report relocated third-party dependency packages too |
 | `sarif-file` | `""` | Optional output file path for a SARIF 2.1.0 report (also exposed as `outputs.sarif-file`) |
-| `version` | `0.6.0` | FoliaScan release version to download and cache |
+| `version` | `1.0.0` | FoliaScan release version to download and cache |
 
 Or invoke the CLI JAR directly in any CI runner:
 
 ```yaml
 - name: Check Folia compatibility
   run: |
-    java -jar foliascan-0.6.0.jar build/libs/*.jar \
+    java -jar foliascan-1.0.0.jar build/libs/*.jar \
       --sarif foliascan.sarif --fail-on critical
 ```
 
@@ -154,8 +154,9 @@ foliascan MyPlugin.jar --write-baseline foliascan-baseline.json   # once
 foliascan MyPlugin.jar --baseline foliascan-baseline.json         # every build
 ```
 
-Fingerprints deliberately exclude line numbers, so editing code above a call site does not
-resurrect a suppressed finding.
+Fingerprints deliberately exclude line numbers, and Baseline v2 records SHA-256 structural hashes
+that normalise javac and kotlinc synthetic lambda ordinal suffixes (`lambda$foo$0` -> `lambda$foo$*`),
+so editing code or adding lambdas above a call site does not resurrect a suppressed finding.
 
 ## Rules
 
@@ -208,6 +209,11 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | FS103 | warning | `Inventory`, `PlayerInventory`, or `EntityEquipment` slot mutation off-region |
 | FS104 | critical | runtime `Bukkit.reload` / `Bukkit.reloadData` (`UnsupportedOperationException` on Folia) |
 | FS105 | warning | unsynchronized instance `HashMap` / `ArrayList` / `HashSet` field mutated across concurrent Folia tasks |
+| FS106 | warning | `Entity` / `Player` captured into `Location`-keyed `RegionScheduler` closure and mutated without `isOwnedByCurrentRegion` |
+| FS107 | warning | live `Chunk` instance captured across `RegionScheduler#runDelayed` / `runAtFixedRate` or `EntityScheduler` closure |
+| FS108 | warning | Scoreboard `Team`, `Objective`, or `Score` state mutated off global region |
+| FS109 | warning | `AdvancementProgress#awardCriteria` / `revokeCriteria` mutated off-region |
+| FS110 | warning | `LootTable#fillInventory` / `populateLoot` evaluated off-region |
 
 Severities mean specific things:
 

@@ -98,6 +98,7 @@ class FindingCollector(
             }
         }
         collectCapturedBlockEntityTasks()
+        collectSpatialClosureHazards()
         collectInternals()
         return dedupe(out)
     }
@@ -154,7 +155,7 @@ class FindingCollector(
         for (rule in RuleCatalog.callRules) {
             if (!enabled(rule) || !rule.matches(insn.owner, insn.name)) continue
             if (rule.contextual && context == null) continue
-            if (rule.contextual && context?.isGlobalTick == true && (rule.id == "FS050" || rule.id == "FS064" || rule.id == "FS094" || rule.id == "FS095" || rule.id == "FS096" || rule.id == "FS097" || rule.id == "FS099")) continue
+            if (rule.contextual && context?.isGlobalTick == true && (rule.id == "FS050" || rule.id == "FS064" || rule.id == "FS094" || rule.id == "FS095" || rule.id == "FS096" || rule.id == "FS097" || rule.id == "FS099" || rule.id == "FS108")) continue
             val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, context?.takeIf { rule.contextual })
             out += finding(
                 rule = rule,
@@ -1090,6 +1091,219 @@ class FindingCollector(
         return CAPTURED_BLOCK_STATE_DESCRIPTORS.any { paramsSection.contains(it) }
     }
 
+    /**
+     * Collects v1.0.0 closure capture hazards:
+     *  - FS106: Entity/Player captured into Location-keyed RegionScheduler (or LOCATION_REGION
+     *    wrapper) closure and mutated without `Bukkit.isOwnedByCurrentRegion(entity)` or
+     *    `entity.getScheduler()` hop.
+     *  - FS107: Live `org.bukkit.Chunk` captured across delayed/repeating RegionScheduler or
+     *    EntityScheduler closures and dereferenced via region-guarded Chunk methods.
+     */
+    private fun collectSpatialClosureHazards() {
+        val checkEntitySplit = enabled(RuleCatalog.capturedEntityInLocationRegion)
+        val checkChunkCapture = enabled(RuleCatalog.capturedChunkAcrossTicks)
+        if (!checkEntitySplit && !checkChunkCapture) return
+
+        val regionWrappers = OffRegionContextResolver.discoverRegionReentryWrappers(jar)
+
+        for (model in jar.classes.values) {
+            for (method in model.methods) {
+                val callerKey = MethodKey(model.internalName, method.id)
+                val callerFirstLine = method.instructions.firstNotNullOfOrNull { it.line }
+
+                method.instructions.forEachIndexed { idx, insn ->
+                    if (insn.kind != InsnKind.CALL) return@forEachIndexed
+
+                    val isDirectLocationRegion = insn.owner.endsWith("/RegionScheduler") &&
+                        insn.name in PARALLEL_REGION_SUBMITTERS
+                    val isWrapperLocationRegion = !isDirectLocationRegion && jar.contains(insn.owner) &&
+                        jar.resolveCallTargets(insn).let { targets ->
+                            targets.isNotEmpty() && targets.all { t ->
+                                regionWrappers[t]?.values?.any { it == OffRegionContextResolver.RegionWrapperKind.LOCATION_REGION } == true
+                            }
+                        }
+
+                    if (checkEntitySplit && (isDirectLocationRegion || isWrapperLocationRegion)) {
+                        val schedulerLabel = "${insn.owner.substringAfterLast('/')}.${insn.name}"
+                        for ((targetKey, isLambda) in resolveSubmittedTasks(method, idx)) {
+                            val targetClass = jar.get(targetKey.owner) ?: continue
+                            val targetMethod = targetClass.method(targetKey.method) ?: continue
+                            val capturesEntity = if (isLambda) {
+                                descriptorCapturesEntity(targetKey.method.desc)
+                            } else {
+                                targetClass.fields.any { descriptorCapturesEntity(it.desc) }
+                            }
+                            if (!capturesEntity) continue
+
+                            val sinkHit = findCapturedEntitySplitSink(targetClass, targetMethod) ?: continue
+                            val (sinkClass, sinkMethod, sinkInsn, midHop) = sinkHit
+                            if (sinkClass.internalName !in reportable) continue
+
+                            val callerHop = TaintHop(callerKey, insn.line ?: callerFirstLine, model.sourceFile)
+                            val sinkKey = MethodKey(sinkClass.internalName, sinkMethod.id)
+                            val sinkHop = TaintHop(sinkKey, sinkInsn.line, sinkClass.sourceFile)
+                            val hops = buildList {
+                                add(callerHop)
+                                if (midHop != null && midHop.method != callerKey && midHop.method != sinkKey) {
+                                    add(midHop)
+                                }
+                                if (callerKey != sinkKey) add(sinkHop)
+                            }
+                            val chainSuffix = if (hops.size > 1) {
+                                "; call chain: ${hops.joinToString(" -> ") { it.renderShort() }}"
+                            } else {
+                                ""
+                            }
+                            out += finding(
+                                rule = RuleCatalog.capturedEntityInLocationRegion,
+                                evidence = "${sinkInsn.owner.substringAfterLast('/')}.${sinkInsn.name}() on captured entity inside Location scheduler",
+                                why = RuleCatalog.capturedEntityInLocationRegion.why,
+                                location = location(sinkClass, sinkMethod, sinkInsn),
+                                contextual = true,
+                                context = "entity captured into Location-keyed $schedulerLabel without isOwnedByCurrentRegion guard " +
+                                    "(entry point ${shortKey(callerKey)}$chainSuffix)",
+                                callChain = hopsToLocations(hops),
+                            )
+                        }
+                    }
+
+                    val isDelayedRegionSubmit = insn.owner.endsWith("/RegionScheduler") &&
+                        (insn.name == "runDelayed" || insn.name == "runAtFixedRate")
+                    val isEntitySubmit = insn.owner.endsWith("/EntityScheduler") &&
+                        insn.name in PARALLEL_REGION_SUBMITTERS
+                    if (checkChunkCapture && (isDelayedRegionSubmit || isEntitySubmit)) {
+                        val schedulerLabel = "${insn.owner.substringAfterLast('/')}.${insn.name}"
+                        for ((targetKey, isLambda) in resolveSubmittedTasks(method, idx)) {
+                            val targetClass = jar.get(targetKey.owner) ?: continue
+                            val targetMethod = targetClass.method(targetKey.method) ?: continue
+                            val capturesChunk = if (isLambda) {
+                                descriptorCapturesChunk(targetKey.method.desc)
+                            } else {
+                                targetClass.fields.any { descriptorCapturesChunk(it.desc) }
+                            }
+                            if (!capturesChunk) continue
+
+                            val sinkHit = findCapturedChunkSink(targetClass, targetMethod) ?: continue
+                            val (sinkClass, sinkMethod, sinkInsn, midHop) = sinkHit
+                            if (sinkClass.internalName !in reportable) continue
+
+                            val callerHop = TaintHop(callerKey, insn.line ?: callerFirstLine, model.sourceFile)
+                            val sinkKey = MethodKey(sinkClass.internalName, sinkMethod.id)
+                            val sinkHop = TaintHop(sinkKey, sinkInsn.line, sinkClass.sourceFile)
+                            val hops = buildList {
+                                add(callerHop)
+                                if (midHop != null && midHop.method != callerKey && midHop.method != sinkKey) {
+                                    add(midHop)
+                                }
+                                if (callerKey != sinkKey) add(sinkHop)
+                            }
+                            val chainSuffix = if (hops.size > 1) {
+                                "; call chain: ${hops.joinToString(" -> ") { it.renderShort() }}"
+                            } else {
+                                ""
+                            }
+                            out += finding(
+                                rule = RuleCatalog.capturedChunkAcrossTicks,
+                                evidence = "Chunk.${sinkInsn.name}() on captured Chunk reference",
+                                why = RuleCatalog.capturedChunkAcrossTicks.why,
+                                location = location(sinkClass, sinkMethod, sinkInsn),
+                                contextual = true,
+                                context = "live Chunk captured across ticks/regions via $schedulerLabel " +
+                                    "(entry point ${shortKey(callerKey)}$chainSuffix)",
+                                callChain = hopsToLocations(hops),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun findCapturedEntitySplitSink(
+        taskClass: ClassModel,
+        taskMethod: MethodModel,
+    ): BlockEntitySinkHit? {
+        if (hasEntityOwnershipGuardOrHop(taskMethod)) return null
+        for (insn in taskMethod.instructions) {
+            if (isCapturedEntityMutatorSink(insn)) {
+                return BlockEntitySinkHit(taskClass, taskMethod, insn)
+            }
+        }
+        val taskKey = MethodKey(taskClass.internalName, taskMethod.id)
+        for (insn in taskMethod.instructions) {
+            if (insn.kind != InsnKind.CALL || !jar.contains(insn.owner)) continue
+            for (helperKey in jar.resolveCallTargets(insn)) {
+                val helperClass = jar.get(helperKey.owner) ?: continue
+                val helperMethod = helperClass.method(helperKey.method) ?: continue
+                if (hasEntityOwnershipGuardOrHop(helperMethod)) continue
+                val hit = helperMethod.instructions.firstOrNull(::isCapturedEntityMutatorSink) ?: continue
+                return BlockEntitySinkHit(helperClass, helperMethod, hit, TaintHop(taskKey, insn.line, taskClass.sourceFile))
+            }
+        }
+        return null
+    }
+
+    private fun hasEntityOwnershipGuardOrHop(method: MethodModel): Boolean =
+        method.instructions.any { insn ->
+            insn.kind == InsnKind.CALL && (
+                (insn.owner in setOf("org/bukkit/Bukkit", "org/bukkit/Server") && insn.name == "isOwnedByCurrentRegion") ||
+                    insn.owner.endsWith("/EntityScheduler") ||
+                    (insn.owner.startsWith("org/bukkit/entity/") && insn.name == "getScheduler")
+                )
+        }
+
+    private fun isCapturedEntityMutatorSink(insn: Insn): Boolean {
+        if (insn.kind != InsnKind.CALL || insn.name in ENUM_METHODS) return false
+        if (insn.owner.startsWith("org/bukkit/entity/") &&
+            insn.owner !in NON_ENTITY_ENUM_OWNERS &&
+            insn.name in CAPTURED_ENTITY_SPLIT_MUTATORS
+        ) {
+            return true
+        }
+        return false
+    }
+
+    private fun findCapturedChunkSink(
+        taskClass: ClassModel,
+        taskMethod: MethodModel,
+    ): BlockEntitySinkHit? {
+        for (insn in taskMethod.instructions) {
+            if (isChunkRegionSink(insn)) {
+                return BlockEntitySinkHit(taskClass, taskMethod, insn)
+            }
+        }
+        val taskKey = MethodKey(taskClass.internalName, taskMethod.id)
+        for (insn in taskMethod.instructions) {
+            if (insn.kind != InsnKind.CALL || !jar.contains(insn.owner)) continue
+            for (helperKey in jar.resolveCallTargets(insn)) {
+                val helperClass = jar.get(helperKey.owner) ?: continue
+                val helperMethod = helperClass.method(helperKey.method) ?: continue
+                val hit = helperMethod.instructions.firstOrNull(::isChunkRegionSink) ?: continue
+                return BlockEntitySinkHit(helperClass, helperMethod, hit, TaintHop(taskKey, insn.line, taskClass.sourceFile))
+            }
+        }
+        return null
+    }
+
+    private fun isChunkRegionSink(insn: Insn): Boolean =
+        insn.kind == InsnKind.CALL &&
+            insn.owner == "org/bukkit/Chunk" &&
+            insn.name in CHUNK_REGION_METHODS
+
+    private fun descriptorCapturesEntity(desc: String): Boolean {
+        val types = if (desc.startsWith("(")) {
+            JvmDescriptors.parseParameterTypes(desc).mapNotNull(JvmDescriptors::internalNameOfType)
+        } else {
+            listOfNotNull(JvmDescriptors.internalNameOfType(desc))
+        }
+        return types.any { it.startsWith("org/bukkit/entity/") && it !in NON_ENTITY_ENUM_OWNERS }
+    }
+
+    private fun descriptorCapturesChunk(desc: String): Boolean {
+        val paramsSection = if (desc.startsWith("(")) desc.substringBefore(')') else desc
+        return paramsSection.contains("Lorg/bukkit/Chunk;")
+    }
+
     private fun shortKey(key: MethodKey): String =
         "${key.owner.substringAfterLast('/')}.${key.method.name}"
 
@@ -1156,5 +1370,21 @@ class FindingCollector(
         val CAPTURED_BLOCK_STATE_DESCRIPTORS: Set<String> =
             (RuleCatalog.TILE_ENTITY_OWNERS + "org/bukkit/block/BlockState")
                 .mapTo(mutableSetOf()) { "L$it;" }
+        val NON_ENTITY_ENUM_OWNERS = setOf(
+            "org/bukkit/entity/EntityType",
+            "org/bukkit/entity/SpawnCategory",
+            "org/bukkit/entity/Pose",
+        )
+        val CAPTURED_ENTITY_SPLIT_MUTATORS = setOf(
+            "teleportAsync", "setHealth", "damage", "setVelocity", "setFireTicks",
+            "addPotionEffect", "removePotionEffect", "remove", "openInventory", "closeInventory",
+            "addPassenger", "removePassenger", "setPassenger", "eject", "leaveVehicle",
+            "setFoodLevel", "setSaturation", "setExp", "setLevel", "giveExp", "getInventory",
+        )
+        val CHUNK_REGION_METHODS = setOf(
+            "getBlock", "getEntities", "getTileEntities", "getChunkSnapshot",
+            "isEntitiesLoaded", "load", "unload", "addPluginChunkTicket",
+            "removePluginChunkTicket", "setForceLoaded",
+        )
     }
 }

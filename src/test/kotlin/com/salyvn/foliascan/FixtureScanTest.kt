@@ -702,8 +702,74 @@ class FixtureScanTest {
             "benchmark missed expected rules or triggered false positives: $metrics"
         }
         assertEquals(0, metrics.falsePositivesOnSafeControl)
+        assertEquals(0, metrics.falseNegatives)
+        assertEquals(1.0, metrics.precision)
+        assertEquals(1.0, metrics.recall)
+        assertEquals(1.0, metrics.f1Score)
         assertTrue(metrics.classesPerSecond > 0.0)
         val json = BenchmarkSuite.renderJson(metrics)
         assertTrue(json.contains("\"recallComplete\": true"))
+        assertTrue(json.contains("\"f1Score\": 1.0"))
+        val console = BenchmarkSuite.renderConsole(metrics)
+        assertTrue(console.contains("precision=1.0  recall=1.0  F1=1.0"))
+    }
+
+    @Test
+    fun `v100 fixture propagates INVOKEDYNAMIC closure taint across custom interface and Kotlin higher-order wrappers`() {
+        val report = scanner.scan(FixtureJars.v100())
+
+        val fs109 = report.findings.filter { it.ruleId == "FS109" }
+        assertEquals(1, fs109.size) { "expected 1 FS109 finding via TaskRouter.runOffRegion closure, got: $fs109" }
+        assertTrue(fs109.single().evidence.contains("AdvancementProgress.awardCriteria()"))
+        assertTrue(fs109.single().context?.contains("FoliaTaskRouter.runOffRegion") == true) {
+            "expected wrapper attribution in context, got: ${fs109.single().context}"
+        }
+        assertTrue(fs109.single().callChain.size >= 3) {
+            "expected >=3-hop inter-procedural closure callChain, got: ${fs109.single().callChain}"
+        }
+
+        val fs110 = report.findings.filter { it.ruleId == "FS110" }
+        assertEquals(1, fs110.size) { "expected 1 FS110 finding via TaskRouter.runOffRegion closure, got: $fs110" }
+        assertTrue(fs110.single().evidence.contains("LootTable.fillInventory()"))
+
+        val fs108 = report.findings.filter { it.ruleId == "FS108" }
+        assertEquals(1, fs108.size) {
+            "expected 1 FS108 finding via FunctionalPool.supplyInBackground while sparing GlobalRegionScheduler, got: $fs108"
+        }
+        assertTrue(fs108.single().evidence.contains("Team.addEntry()"))
+        assertTrue(fs108.single().context?.contains("FunctionalPool.supplyInBackground") == true)
+    }
+
+    @Test
+    fun `v100 fixture suppresses false positives when async task re-enters Folia via custom scheduler wrapper`() {
+        val report = scanner.scan(FixtureJars.v100())
+        val falsePositives = report.findings.filter {
+            it.location.method?.contains("safeAsyncHoppingViaCustomRouter") == true ||
+                it.context?.contains("safeAsyncHoppingViaCustomRouter") == true
+        }
+        assertTrue(falsePositives.isEmpty()) {
+            "custom Folia region/entity wrapper re-entry falsely flagged: $falsePositives"
+        }
+    }
+
+    @Test
+    fun `v100 fixture flags FS106 unowned entity capture in Location scheduler and FS107 delayed Chunk capture`() {
+        val report = scanner.scan(FixtureJars.v100())
+
+        val fs106 = report.findings.filter { it.ruleId == "FS106" }
+        assertEquals(1, fs106.size) {
+            "expected 1 FS106 finding (sparing isOwnedByCurrentRegion guard), got: " +
+                fs106.map { "${it.location.method}: ${it.evidence}" }
+        }
+        assertTrue(fs106.single().evidence.contains("Player.setHealth() on captured entity"))
+        assertTrue(fs106.single().context?.contains("RegionScheduler.execute") == true)
+        assertTrue(fs106.single().callChain.size >= 2)
+
+        val fs107 = report.findings.filter { it.ruleId == "FS107" }
+        assertEquals(1, fs107.size) {
+            "expected 1 FS107 finding on captured Chunk in runDelayed, got: $fs107"
+        }
+        assertTrue(fs107.single().evidence.contains("Chunk.getEntities() on captured Chunk reference"))
+        assertTrue(fs107.single().context?.contains("RegionScheduler.runDelayed") == true)
     }
 }

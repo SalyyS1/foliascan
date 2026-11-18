@@ -105,6 +105,9 @@ object Bukkit {
     fun isPrimaryThread(): Boolean = false
 
     @JvmStatic
+    fun isOwnedByCurrentRegion(entityOrLocation: Any): Boolean = true
+
+    @JvmStatic
     fun getGlobalRegionScheduler(): GlobalRegionScheduler = throw UnsupportedOperationException()
 
     @JvmStatic

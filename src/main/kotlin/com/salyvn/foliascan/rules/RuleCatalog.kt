@@ -982,6 +982,104 @@ object RuleCatalog {
         ),
     )
 
+    // FS106-FS110: Folia v1.0.0 rules -------------------------------------------------------
+
+    val capturedEntityInLocationRegion = ConcurrencyRule(
+        id = "FS106",
+        severity = Severity.WARNING,
+        title = "Entity or Player captured into Location-keyed RegionScheduler closure risks spatial split-brain",
+        why = "RegionScheduler#execute, #run, #runDelayed, and #runAtFixedRate bind execution to the " +
+            "chunk region owning the target Location, NOT the region owning a captured Entity or Player. " +
+            "When an INVOKEDYNAMIC closure or Runnable captures a live Entity/Player and mutates its health, " +
+            "velocity, inventory, passengers, or initiates teleportAsync without verifying " +
+            "Bukkit.isOwnedByCurrentRegion(entity), Folia throws IllegalStateException if the entity resides " +
+            "in or has moved to a separate region.",
+        fix = "Dispatch entity state mutations and teleportAsync calls via entity.getScheduler().run(plugin, ...), " +
+            "or guard same-region block-and-entity interactions with if (Bukkit.isOwnedByCurrentRegion(entity)).",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftEntity#getHandle & CraftEntity#teleportAsync TickThread.ensureTickThread(entity) vs RegionScheduler Location ownership",
+        ),
+    )
+
+    val capturedChunkAcrossTicks = ConcurrencyRule(
+        id = "FS107",
+        severity = Severity.WARNING,
+        title = "Live Chunk reference captured across delayed RegionScheduler or EntityScheduler closure",
+        why = "Capturing a live org.bukkit.Chunk instance inside a RegionScheduler.runDelayed / runAtFixedRate " +
+            "lambda or an EntityScheduler callback holds a direct CraftChunk reference across tick boundaries " +
+            "and Moonrise region split/merge transitions. Accessing getBlock, getEntities, getTileEntities, or " +
+            "chunk tickets after the chunk unloads or the entity crosses into another region throws IllegalStateException.",
+        fix = "Capture immutable coordinates (world name, chunkX, chunkZ or Location) instead of a live Chunk, " +
+            "and re-acquire world.getChunkAt(chunkX, chunkZ) on the owning RegionScheduler tick.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftChunk TickThread.ensureTickThread guards & Moonrise region split/merge lifecycle",
+        ),
+    )
+
+    val scoreboardComponentOffRegion = CallRule(
+        id = "FS108",
+        severity = Severity.WARNING,
+        title = "Scoreboard Team, Objective, or Score mutated from off-region context",
+        why = "Mutating existing Team entries/prefixes, Objective display state, or Score values from an " +
+            "AsyncScheduler task, coroutine worker, Netty handler, or regional tick thread races with " +
+            "concurrent scoreboard map reads and packet broadcasts across Folia threads.",
+        fix = "Schedule server-wide Team/Objective/Score updates on Bukkit.getGlobalRegionScheduler().execute(plugin, ...) " +
+            "or migrate per-player displays to Adventure/packet-level bossbars and actionbars.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftTeam, CraftObjective, and CraftScore unsynchronized backing state across regions",
+        ),
+        owners = setOf(
+            "org/bukkit/scoreboard/Team",
+            "org/bukkit/scoreboard/Objective",
+            "org/bukkit/scoreboard/Score",
+        ),
+        methods = setOf(
+            "addEntry", "removeEntry", "addEntities", "removeEntities", "addPlayer", "removePlayer",
+            "setPrefix", "setSuffix", "prefix", "suffix", "color", "setColor", "setOption",
+            "setAllowFriendlyFire", "setCanSeeFriendlyInvisibles", "setDisplayName", "displayName",
+            "setRenderType", "getScore", "setScore", "resetScore", "unregister",
+        ),
+        contextual = true,
+    )
+
+    val advancementProgressOffRegion = CallRule(
+        id = "FS109",
+        severity = Severity.WARNING,
+        title = "AdvancementProgress criteria mutated from off-region or async context",
+        why = "CraftAdvancementProgress#awardCriteria and #revokeCriteria invoke NMS PlayerAdvancements#award " +
+            "and #revoke on the backing ServerPlayer, firing PlayerAdvancementDoneEvent, mutating non-thread-safe " +
+            "criteria progress maps, and granting experience or recipe rewards under TickThread.ensureTickThread.",
+        fix = "Award or revoke advancement criteria inside player.getScheduler().run(plugin, task, null).",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftAdvancementProgress#awardCriteria -> net.minecraft.server.PlayerAdvancements#award",
+        ),
+        owners = setOf("org/bukkit/advancement/AdvancementProgress"),
+        methods = setOf("awardCriteria", "revokeCriteria"),
+        contextual = true,
+    )
+
+    val lootTableOffRegion = CallRule(
+        id = "FS110",
+        severity = Severity.WARNING,
+        title = "LootTable.fillInventory or populateLoot evaluated from off-region context",
+        why = "CraftLootTable#fillInventory and #populateLoot construct NMS LootParams against live ServerLevel " +
+            "world/entity state, fire LootGenerateEvent, and mutate target Inventory slots under " +
+            "TickThread.ensureTickThread. Calling them from AsyncScheduler or GlobalRegionScheduler throws " +
+            "IllegalStateException off-region.",
+        fix = "Invoke LootTable#fillInventory or #populateLoot inside Bukkit.getRegionScheduler().execute(plugin, originLocation, task).",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftLootTable#fillInventory and #populateLoot ServerLevel & container region checks",
+        ),
+        owners = setOf("org/bukkit/loot/LootTable"),
+        methods = setOf("fillInventory", "populateLoot"),
+        contextual = true,
+    )
+
     // --- assembled views -----------------------------------------------------------------
 
     val manifestRules: List<ManifestRule> = listOf(foliaSupportFlag)
@@ -1001,6 +1099,8 @@ object RuleCatalog {
         capturedBlockEntityAcrossTicks,
         unconfinedCoroutineSuspension,
         unsynchronizedInstanceCollection,
+        capturedEntityInLocationRegion,
+        capturedChunkAcrossTicks,
     )
 
     val callRules: List<CallRule> = listOf(
@@ -1027,6 +1127,9 @@ object RuleCatalog {
         selectEntitiesOffRegion,
         inventoryOffRegionMutation,
         runtimeServerReload,
+        scoreboardComponentOffRegion,
+        advancementProgressOffRegion,
+        lootTableOffRegion,
     )
 
     val all: List<Rule> =

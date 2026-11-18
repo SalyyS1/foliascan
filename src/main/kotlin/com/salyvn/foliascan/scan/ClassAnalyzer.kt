@@ -112,10 +112,13 @@ object ClassAnalyzer {
             bootstrapMethodHandle: Handle?,
             vararg bootstrapMethodArguments: Any?,
         ) {
-            // For LambdaMetafactory the implementation method is the sole Handle among the
-            // bootstrap arguments; that handle points at the synthetic method holding the
-            // lambda body, which is what we need in order to attribute code inside a lambda.
+            // For LambdaMetafactory (both metafactory and altMetafactory for intersection /
+            // Serializable closures), the implementation Handle points at either a synthetic
+            // lambda$ method or an explicit method reference target.
             val impl = bootstrapMethodArguments.filterIsInstance<Handle>().firstOrNull()
+            val captured = JvmDescriptors.parseParameterTypes(descriptor)
+                .mapNotNull(JvmDescriptors::internalNameOfType)
+            val samIface = JvmDescriptors.internalNameOfType(JvmDescriptors.parseReturnType(descriptor))
             record(
                 Insn(
                     kind = InsnKind.INDY,
@@ -124,6 +127,9 @@ object ClassAnalyzer {
                     desc = descriptor,
                     line = currentLine,
                     lambdaTarget = impl?.let { MethodKey(it.owner, MethodId(it.name, it.desc)) },
+                    capturedTypes = captured,
+                    samInterface = samIface,
+                    bootstrapOwner = bootstrapMethodHandle?.owner,
                 ),
             )
         }

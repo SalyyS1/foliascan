@@ -142,7 +142,10 @@ object SarifReporter {
                 )
             }
         }
-        putJsonObject("partialFingerprints") { put("foliascan/v1", finding.fingerprint()) }
+        putJsonObject("partialFingerprints") {
+            put("foliascan/v1", finding.fingerprint())
+            put("foliascan/structuralHash/v2", finding.structuralHash())
+        }
     }
 
     private fun locationObject(loc: CodeLocation) = buildJsonObject {
@@ -207,6 +210,8 @@ object SarifReporter {
             "FS088" -> "Async chunk-generation taint entry"
             "FS090" -> "Block-entity snapshot capture and schedule"
             "FS101" -> "Coroutine suspension or async continuation entry"
+            "FS106" -> "Location-keyed RegionScheduler closure capture"
+            "FS107" -> "Delayed or cross-region Chunk closure capture"
             else -> "Off-region taint entry"
         }
         idx == lastIdx -> when (finding.ruleId) {
@@ -216,9 +221,11 @@ object SarifReporter {
             "FS090" -> "Delayed or cross-region block-entity sink (${finding.evidence})"
             "FS101" -> "Unconfined continuation resumption sink (${finding.evidence})"
             "FS105" -> "Unsynchronized instance collection mutation sink (${finding.evidence})"
+            "FS106" -> "Unowned captured entity mutation sink (${finding.evidence})"
+            "FS107" -> "Captured live Chunk access sink (${finding.evidence})"
             else -> "Region-guarded sink (${finding.evidence})"
         }
-        else -> "In-jar call or interface dispatch hop $idx"
+        else -> "In-jar call, closure wrapper, or interface dispatch hop $idx"
     }
 
     private fun level(severity: Severity?): String = when (severity) {

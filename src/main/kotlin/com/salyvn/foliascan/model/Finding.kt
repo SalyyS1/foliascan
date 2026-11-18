@@ -1,5 +1,6 @@
 package com.salyvn.foliascan.model
 
+import java.security.MessageDigest
 import kotlinx.serialization.Serializable
 
 /**
@@ -74,6 +75,57 @@ data class Finding(
      */
     fun fingerprint(): String =
         listOf(ruleId, location.className, location.method ?: "-", evidence).joinToString("|")
+
+    /**
+     * Lambda-renumber-resilient SHA-256 structural digest (64-bit hex prefix) for Baseline v2
+     * and SARIF partialFingerprints. Normalises javac/kotlinc synthetic lambda suffixes
+     * (`lambda$foo$0`, `foo$lambda$2`, `$1`) so adding an unrelated closure earlier in the same
+     * class does not invalidate baselined findings.
+     */
+    fun structuralHash(): String {
+        val normClass = normalizeSyntheticClass(location.className)
+        val normMethod = location.method?.let(::normalizeSyntheticMethod) ?: "-"
+        val chainShape = callChain.joinToString("->") { hop ->
+            val cls = normalizeSyntheticClass(hop.className.substringAfterLast('.'))
+            val m = hop.method?.let(::normalizeSyntheticMethod) ?: "-"
+            "$cls#$m"
+        }
+        val payload = listOf(ruleId, normClass, normMethod, evidence, chainShape).joinToString("|")
+        val digest = MessageDigest.getInstance("SHA-256").digest(payload.toByteArray(Charsets.UTF_8))
+        val hex = buildString(16) {
+            for (i in 0 until 8) {
+                append(String.format("%02x", digest[i].toInt() and 0xff))
+            }
+        }
+        return "sha256-16:$hex"
+    }
+
+    companion object {
+        fun normalizeSyntheticMethod(name: String): String {
+            val lastDollar = name.lastIndexOf('$')
+            if (lastDollar > 0 && lastDollar + 1 < name.length) {
+                val suffix = name.substring(lastDollar + 1)
+                if (suffix.all { it.isDigit() }) {
+                    val prefix = name.substring(0, lastDollar + 1)
+                    if (prefix.startsWith("lambda\$") || prefix.endsWith("\$lambda\$")) {
+                        return "${prefix}*"
+                    }
+                }
+            }
+            return name
+        }
+
+        fun normalizeSyntheticClass(className: String): String {
+            val lastDollar = className.lastIndexOf('$')
+            if (lastDollar > 0 && lastDollar + 1 < className.length) {
+                val suffix = className.substring(lastDollar + 1)
+                if (suffix.all { it.isDigit() }) {
+                    return className.substring(0, lastDollar + 1) + "*"
+                }
+            }
+            return className
+        }
+    }
 }
 
 /** Everything learned about one jar. */

@@ -1,5 +1,7 @@
 package com.salyvn.foliascan.scan
 
+import org.objectweb.asm.Opcodes
+
 /** One method hop along an off-region taint call chain. */
 data class TaintHop(
     val method: MethodKey,
@@ -172,9 +174,331 @@ object OffRegionContextResolver {
         "regiondispatcher", "entitydispatcher", "minecraftdispatcher",
     )
 
+    private val STANDARD_SAM_INTERFACES = setOf(
+        "java/lang/Runnable",
+        "java/util/concurrent/Callable",
+    )
+
+    private val STANDARD_SAM_METHODS = setOf(
+        "run", "call", "accept", "apply", "get", "test", "invoke",
+    )
+
+    enum class RegionWrapperKind {
+        LOCATION_REGION,
+        ENTITY_OR_COROUTINE_REGION,
+    }
+
+    private data class OffRegionSamSummary(
+        val wrapperMethod: MethodKey,
+        val wrapperLine: Int?,
+        val wrapperSourceFile: String?,
+        val reason: String,
+        val isGlobalTick: Boolean = false,
+        val isCoroutine: Boolean = false,
+    )
+
+    /**
+     * Discovers in-jar scheduler wrapper methods whose functional parameter(s) re-enter a Folia
+     * RegionScheduler or EntityScheduler (for example `FoliaExecutor.runAtLocation(loc, task)`).
+     * Closures passed to these wrappers inside async code must be treated as region re-entries
+     * rather than inheriting off-region taint, while `LOCATION_REGION` wrappers are also audited
+     * for cross-region Entity capture (`FS106`).
+     */
+    fun discoverRegionReentryWrappers(jar: JarClasses): Map<MethodKey, Map<Int, RegionWrapperKind>> {
+        val summaries = LinkedHashMap<MethodKey, MutableMap<Int, RegionWrapperKind>>()
+        repeat(4) {
+            var changed = false
+            for (model in jar.classes.values) {
+                for (method in model.methods) {
+                    val key = MethodKey(model.internalName, method.id)
+                    val funcParams = functionalParamSlots(method, jar)
+                    if (funcParams.isEmpty()) continue
+
+                    method.flowInstructions.forEachIndexed { idx, insn ->
+                        if (insn.kind != InsnKind.CALL) return@forEachIndexed
+                        val directKind: RegionWrapperKind? = when {
+                            insn.owner.endsWith("/RegionScheduler") && insn.name in REGION_REENTRY_SUBMITTERS ->
+                                RegionWrapperKind.LOCATION_REGION
+                            insn.owner.endsWith("/EntityScheduler") && insn.name in REGION_REENTRY_SUBMITTERS ->
+                                RegionWrapperKind.ENTITY_OR_COROUTINE_REGION
+                            isFoliaCoroutineCallInFlow(method.flowInstructions, idx) ->
+                                RegionWrapperKind.ENTITY_OR_COROUTINE_REGION
+                            else -> null
+                        }
+                        if (directKind != null) {
+                            for ((slot, paramInfo) in funcParams) {
+                                val (paramIdx, paramInternal) = paramInfo
+                                if (flowHandsParamToSubmitter(method.flowInstructions, idx, slot, paramInternal, jar, forbidAsyncInsideAdapter = true)) {
+                                    val map = summaries.getOrPut(key) { LinkedHashMap() }
+                                    if (map.putIfAbsent(paramIdx, directKind) == null) changed = true
+                                }
+                            }
+                            return@forEachIndexed
+                        }
+
+                        if (!jar.contains(insn.owner)) return@forEachIndexed
+                        val targets = jar.resolveCallTargets(insn)
+                        if (targets.isEmpty()) return@forEachIndexed
+                        val calleeParamTypes = JvmDescriptors.parseParameterTypes(insn.desc)
+                        calleeParamTypes.forEachIndexed { calleeParamIdx, _ ->
+                            val targetKinds = targets.mapNotNull { summaries[it]?.get(calleeParamIdx) }
+                            if (targetKinds.size == targets.size) {
+                                val kind = if (targetKinds.all { it == RegionWrapperKind.LOCATION_REGION }) {
+                                    RegionWrapperKind.LOCATION_REGION
+                                } else {
+                                    RegionWrapperKind.ENTITY_OR_COROUTINE_REGION
+                                }
+                                for ((slot, paramInfo) in funcParams) {
+                                    val (paramIdx, paramInternal) = paramInfo
+                                    if (flowHandsParamToSubmitter(method.flowInstructions, idx, slot, paramInternal, jar, forbidAsyncInsideAdapter = true)) {
+                                        val map = summaries.getOrPut(key) { LinkedHashMap() }
+                                        if (map.putIfAbsent(paramIdx, kind) == null) changed = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!changed) return summaries
+        }
+        return summaries
+    }
+
+    /**
+     * Discovers in-jar functional wrapper methods that dispatch a SAM closure parameter onto an
+     * off-region pool (`AsyncScheduler`, `ExecutorService`, `CompletableFuture.supplyAsync`,
+     * `Dispatchers.IO`, or `GlobalRegionScheduler`). Resolves multi-hop wrapper chains and CHA
+     * interface implementations to fixpoint while skipping runtime Folia-guarded legacy branches.
+     */
+    private fun discoverOffRegionSamWrappers(
+        jar: JarClasses,
+        guards: GuardIndex,
+    ): Map<MethodKey, Map<Int, OffRegionSamSummary>> {
+        val summaries = LinkedHashMap<MethodKey, MutableMap<Int, OffRegionSamSummary>>()
+        repeat(4) {
+            var changed = false
+            for (model in jar.classes.values) {
+                for (method in model.methods) {
+                    if (guards.guardFor(model.internalName, method.id.name) != null) continue
+                    val key = MethodKey(model.internalName, method.id)
+                    val funcParams = functionalParamSlots(method, jar)
+                    if (funcParams.isEmpty()) continue
+                    val firstLine = method.instructions.firstNotNullOfOrNull { it.line }
+
+                    method.flowInstructions.forEachIndexed { idx, insn ->
+                        if (insn.kind != InsnKind.CALL) return@forEachIndexed
+                        val isGlobal = isGlobalRegionSubmitter(insn)
+                        val coroReason = coroutineSubmitterReasonInFlow(method.flowInstructions, idx)
+                        val asyncReason = coroReason ?: submitterReason(insn)
+                        if (isGlobal || asyncReason != null) {
+                            val baseReason = if (isGlobal) {
+                                "GlobalRegionScheduler.${insn.name} (region={null})"
+                            } else {
+                                asyncReason!!
+                            }
+                            for ((slot, paramInfo) in funcParams) {
+                                val (paramIdx, paramInternal) = paramInfo
+                                if (flowHandsParamToSubmitter(method.flowInstructions, idx, slot, paramInternal, jar, forbidAsyncInsideAdapter = false)) {
+                                    val map = summaries.getOrPut(key) { LinkedHashMap() }
+                                    if (!map.containsKey(paramIdx)) {
+                                        map[paramIdx] = OffRegionSamSummary(
+                                            wrapperMethod = key,
+                                            wrapperLine = insn.line ?: firstLine,
+                                            wrapperSourceFile = model.sourceFile,
+                                            reason = baseReason,
+                                            isGlobalTick = isGlobal,
+                                            isCoroutine = coroReason != null,
+                                        )
+                                        changed = true
+                                    }
+                                }
+                            }
+                            return@forEachIndexed
+                        }
+
+                        if (!jar.contains(insn.owner)) return@forEachIndexed
+                        for (target in jar.resolveCallTargets(insn)) {
+                            if (guards.guardFor(target.owner, target.method.name) != null) continue
+                            val targetMap = summaries[target] ?: continue
+                            for ((calleeParamIdx, targetSummary) in targetMap) {
+                                for ((slot, paramInfo) in funcParams) {
+                                    val (paramIdx, paramInternal) = paramInfo
+                                    if (flowHandsParamToSubmitter(method.flowInstructions, idx, slot, paramInternal, jar, forbidAsyncInsideAdapter = false)) {
+                                        val map = summaries.getOrPut(key) { LinkedHashMap() }
+                                        if (!map.containsKey(paramIdx) && calleeParamIdx >= 0) {
+                                            map[paramIdx] = targetSummary.copy(
+                                                wrapperMethod = key,
+                                                wrapperLine = insn.line ?: firstLine,
+                                                wrapperSourceFile = model.sourceFile,
+                                            )
+                                            changed = true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!changed) return summaries
+        }
+        return summaries
+    }
+
+    /** Returns `slot -> (paramIndex, internalTypeName)` for every functional parameter on [method]. */
+    private fun functionalParamSlots(
+        method: MethodModel,
+        jar: JarClasses,
+    ): Map<Int, Pair<Int, String>> {
+        val isStatic = (method.access and Opcodes.ACC_STATIC) != 0
+        val paramTypes = JvmDescriptors.parseParameterTypes(method.id.desc)
+        if (paramTypes.isEmpty()) return emptyMap()
+        val slotMap = JvmDescriptors.parameterSlotMap(isStatic, method.id.desc)
+        val out = LinkedHashMap<Int, Pair<Int, String>>()
+        for ((slot, paramIdx) in slotMap) {
+            val internal = JvmDescriptors.internalNameOfType(paramTypes[paramIdx]) ?: continue
+            if (isFunctionalInterface(internal, jar)) {
+                out[slot] = paramIdx to internal
+            }
+        }
+        return out
+    }
+
+    internal fun isFunctionalInterface(internalName: String, jar: JarClasses): Boolean {
+        if (internalName in STANDARD_SAM_INTERFACES) return true
+        if (internalName.startsWith("java/util/function/")) return true
+        if (internalName.startsWith("kotlin/jvm/functions/Function")) return true
+        val cls = jar.get(internalName) ?: return false
+        val abstractMethods = cls.methods.count { (it.access and Opcodes.ACC_ABSTRACT) != 0 }
+        return abstractMethods == 1
+    }
+
+    private fun samMethodNamesFor(internalName: String, jar: JarClasses): Set<String> {
+        val cls = jar.get(internalName)
+        val customAbstract = cls?.methods?.firstOrNull { (it.access and Opcodes.ACC_ABSTRACT) != 0 }?.id?.name
+        return if (customAbstract != null) STANDARD_SAM_METHODS + customAbstract else STANDARD_SAM_METHODS
+    }
+
+    private fun flowHandsParamToSubmitter(
+        flow: List<Insn>,
+        callIndex: Int,
+        paramSlot: Int,
+        paramInternal: String,
+        jar: JarClasses,
+        forbidAsyncInsideAdapter: Boolean,
+    ): Boolean {
+        val windowStart = maxOf(0, callIndex - 20)
+        var sawParamLoad = false
+        val adapterClosures = mutableListOf<Insn>()
+        for (i in callIndex - 1 downTo windowStart) {
+            val prev = flow[i]
+            when (prev.kind) {
+                InsnKind.VAR -> if (prev.opcode == Opcodes.ALOAD && prev.name.toIntOrNull() == paramSlot) {
+                    sawParamLoad = true
+                }
+                InsnKind.INDY -> if (prev.lambdaTarget != null) {
+                    adapterClosures += prev
+                }
+                InsnKind.STACK_POP -> break
+                InsnKind.FIELD -> if (prev.opcode == Opcodes.PUTFIELD || prev.opcode == Opcodes.PUTSTATIC) break
+                else -> Unit
+            }
+        }
+        if (sawParamLoad && adapterClosures.isEmpty()) return true
+        for (indy in adapterClosures) {
+            val capturesType = paramInternal in indy.capturedTypes || sawParamLoad
+            if (!capturesType) continue
+            val target = indy.lambdaTarget ?: continue
+            val body = jar.get(target.owner)?.method(target.method) ?: continue
+            if (forbidAsyncInsideAdapter && body.instructions.any { submitterReason(it) != null }) continue
+            val samNames = samMethodNamesFor(paramInternal, jar)
+            val invokesSam = body.instructions.any { insn ->
+                insn.kind == InsnKind.CALL &&
+                    (insn.owner == paramInternal || isFunctionalInterface(insn.owner, jar)) &&
+                    insn.name in samNames
+            }
+            if (invokesSam) return true
+        }
+        return false
+    }
+
+    private fun isFoliaCoroutineCallInFlow(flow: List<Insn>, callIndex: Int): Boolean {
+        val insn = flow[callIndex]
+        if (insn.kind != InsnKind.CALL || insn.name !in COROUTINE_LAUNCH_METHODS) return false
+        val windowStart = maxOf(0, callIndex - 14)
+        for (i in callIndex - 1 downTo windowStart) {
+            val prev = flow[i]
+            if (prev.kind == InsnKind.CALL || prev.kind == InsnKind.FIELD) {
+                val lower = prev.name.lowercase()
+                if (FOLIA_COROUTINE_DISPATCHER_HINTS.any { lower.contains(it) }) return true
+            }
+        }
+        return false
+    }
+
+    private fun coroutineSubmitterReasonInFlow(flow: List<Insn>, callIndex: Int): String? {
+        val insn = flow[callIndex]
+        if (insn.kind != InsnKind.CALL) return null
+        val isBuilder = (insn.owner in COROUTINE_BUILDER_OWNERS || insn.owner.startsWith("kotlinx/coroutines/")) &&
+            insn.name in COROUTINE_LAUNCH_METHODS
+        if (!isBuilder) return null
+        if (insn.owner == "kotlin/coroutines/ContinuationKt" && insn.name == "startCoroutine") {
+            return "started via unconfined ContinuationKt.startCoroutine"
+        }
+        val builderLabel = insn.name.substringBefore('$')
+        val windowStart = maxOf(0, callIndex - 18)
+        for (i in callIndex - 1 downTo windowStart) {
+            val prev = flow[i]
+            if (prev.kind == InsnKind.CALL &&
+                prev.owner == "kotlinx/coroutines/Dispatchers" &&
+                prev.name in OFF_REGION_DISPATCHER_GETTERS
+            ) {
+                return "launched on Kotlin coroutine $builderLabel(Dispatchers.${prev.name.removePrefix("get")})"
+            }
+            if (prev.kind == InsnKind.FIELD && prev.owner == "kotlinx/coroutines/GlobalScope") {
+                return "launched on Kotlin GlobalScope.$builderLabel"
+            }
+            if (prev.kind == InsnKind.CALL &&
+                prev.owner == "kotlinx/coroutines/ExecutorsKt" &&
+                (prev.name == "from" || prev.name == "asCoroutineDispatcher")
+            ) {
+                return "launched on Executor-backed Kotlin coroutine $builderLabel"
+            }
+        }
+        return null
+    }
+
+    /** Maps closures passed at [callIndex] to 0-based parameter indices of the called method. */
+    internal fun bindCallSiteClosures(
+        method: MethodModel,
+        callIndex: Int,
+        callDesc: String,
+        jar: JarClasses,
+    ): List<Pair<Int, MethodKey>> {
+        val closuresRev = tasksHandedTo(method, callIndex, jar)
+        if (closuresRev.isEmpty()) return emptyList()
+        val closures = closuresRev.asReversed()
+        val paramTypes = JvmDescriptors.parseParameterTypes(callDesc)
+        val funcParamIndices = paramTypes.indices.filter { idx ->
+            val internal = JvmDescriptors.internalNameOfType(paramTypes[idx])
+            internal != null && isFunctionalInterface(internal, jar)
+        }
+        if (funcParamIndices.isEmpty()) return emptyList()
+        if (funcParamIndices.size == closures.size) {
+            return funcParamIndices.zip(closures)
+        }
+        if (closures.size == 1) {
+            return listOf(funcParamIndices.last() to closures.single())
+        }
+        return funcParamIndices.takeLast(closures.size).zip(closures)
+    }
+
     fun resolve(jar: JarClasses, guards: GuardIndex = GuardIndex.EMPTY): OffRegionContexts {
         val seeds = mutableMapOf<MethodKey, OffRegionOrigin>()
         val reentries = mutableSetOf<MethodKey>()
+        val regionWrappers = discoverRegionReentryWrappers(jar)
+        val offRegionWrappers = discoverOffRegionSamWrappers(jar, guards)
 
         for (model in jar.classes.values) {
             for (method in model.methods) {
@@ -213,6 +537,56 @@ object OffRegionContextResolver {
                             )
                         }
                     }
+
+                    // Inter-procedural INVOKEDYNAMIC / LambdaMetafactory wrapper resolution
+                    if (insn.kind == InsnKind.CALL && jar.contains(insn.owner)) {
+                        val callTargets = jar.resolveCallTargets(insn)
+                        if (callTargets.isNotEmpty()) {
+                            val bindings = bindCallSiteClosures(method, index, insn.desc, jar)
+                            for ((paramIdx, closureTarget) in bindings) {
+                                val allReentry = callTargets.all { regionWrappers[it]?.containsKey(paramIdx) == true }
+                                if (allReentry) {
+                                    reentries += closureTarget
+                                    continue
+                                }
+                                if (guards.guardFor(model.internalName, method.id.name) != null) continue
+                                val matchedSummary = callTargets.firstNotNullOfOrNull { offRegionWrappers[it]?.get(paramIdx) }
+                                if (matchedSummary != null) {
+                                    if (matchedSummary.isGlobalTick) reentries += closureTarget
+                                    val callerHop = TaintHop(here, insn.line ?: firstLine, model.sourceFile)
+                                    val wrapperHop = TaintHop(
+                                        matchedSummary.wrapperMethod,
+                                        matchedSummary.wrapperLine,
+                                        matchedSummary.wrapperSourceFile,
+                                    )
+                                    val targetClass = jar.get(closureTarget.owner)
+                                    val targetLine = targetClass?.method(closureTarget.method)
+                                        ?.instructions?.firstNotNullOfOrNull { it.line }
+                                    val closureHop = TaintHop(closureTarget, targetLine, targetClass?.sourceFile)
+                                    val hops = buildList {
+                                        add(callerHop)
+                                        if (matchedSummary.wrapperMethod != here && matchedSummary.wrapperMethod != closureTarget) {
+                                            add(wrapperHop)
+                                        }
+                                        if (closureTarget != here) add(closureHop)
+                                    }
+                                    val wrapperLabel = "${simple(matchedSummary.wrapperMethod.owner)}.${matchedSummary.wrapperMethod.method.name}"
+                                    seeds.putIfAbsent(
+                                        closureTarget,
+                                        OffRegionOrigin(
+                                            entryPoint = here,
+                                            reason = "closure passed to $wrapperLabel (${matchedSummary.reason})",
+                                            depth = (hops.size - 1).coerceAtLeast(1),
+                                            isGlobalTick = matchedSummary.isGlobalTick,
+                                            isCoroutine = matchedSummary.isCoroutine,
+                                            hops = hops,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     val coroutineReason = coroutineSubmitterReason(method, index)
                     val reason = coroutineReason
                         ?: submitterReason(insn)
