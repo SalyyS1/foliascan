@@ -47,7 +47,7 @@ Inspect one `.jar` or drop an entire server `plugins/` directory directly in you
 - Renders a multi-JAR Server Compatibility Matrix (`PASS`, `PATCHED`, `FAIL`) with Markdown and
   JSON export, plus a 1-click synthesized sample plugin `.jar` for instant testing.
 
-For full intra-jar call-graph async taint propagation (`FS050` through `FS065`, `FS081` concurrency audit, `FS082` through `FS086` cross-region and lifecycle rules, and `FS087` through `FS090` Moonrise async chunk generation and block-entity rules),
+For full intra-jar call-graph async taint propagation (`FS050` through `FS065`, `FS081` concurrency audit, `FS082` through `FS086` cross-region and lifecycle rules, `FS087` through `FS090` Moonrise async chunk generation and block-entity rules, and `FS111` through `FS115` Paper/Folia 26.3 DataComponentHolder, shared inventory, regional scoreboard, and Leashable rules),
 baseline files, and OASIS SARIF v2.1.0 output (`codeFlows` + regional taint call-chain paths), run
 the CLI or GitHub Action below.
 
@@ -59,14 +59,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-1.0.0.jar MyPlugin.jar
+java -jar foliascan-1.1.0.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-1.0.0.jar MyPlugin.jar
+java -jar build/libs/foliascan-1.1.0.jar MyPlugin.jar
 ```
 
 ## Usage
@@ -113,7 +113,7 @@ permissions:
   contents: read
   security-events: write
 steps:
-  - uses: SalyyS1/foliascan@v1.0.0
+  - uses: SalyyS1/foliascan@v1.1.0
     with:
       jar: build/libs/*.jar
       sarif-file: foliascan.sarif
@@ -136,14 +136,14 @@ and exits with FoliaScan's threshold exit code.
 | `disable` | `""` | Comma- or space-separated rule IDs to turn off (for example `FS063,FS070`) |
 | `all` | `false` | Report relocated third-party dependency packages too |
 | `sarif-file` | `""` | Optional output file path for a SARIF 2.1.0 report (also exposed as `outputs.sarif-file`) |
-| `version` | `1.0.0` | FoliaScan release version to download and cache |
+| `version` | `1.1.0` | FoliaScan release version to download and cache |
 
 Or invoke the CLI JAR directly in any CI runner:
 
 ```yaml
 - name: Check Folia compatibility
   run: |
-    java -jar foliascan-1.0.0.jar build/libs/*.jar \
+    java -jar foliascan-1.1.0.jar build/libs/*.jar \
       --sarif foliascan.sarif --fail-on critical
 ```
 
@@ -214,6 +214,11 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | FS108 | warning | Scoreboard `Team`, `Objective`, or `Score` state mutated off global region |
 | FS109 | warning | `AdvancementProgress#awardCriteria` / `revokeCriteria` mutated off-region |
 | FS110 | warning | `LootTable#fillInventory` / `populateLoot` evaluated off-region |
+| FS111 | warning | Paper 26.3 `DataComponentHolder` or live container/equipment `ItemStack` component mutated off-region |
+| FS112 | warning | shared `Inventory` or `Merchant` field mutated concurrently across Folia regional or async schedulers |
+| FS113 | warning | open `InventoryView` slot, cursor, or title mutated from an off-region context |
+| FS114 | warning | Scoreboard `Team`, `Objective`, `Score`, or `resetScores` mutated across parallel regional schedulers |
+| FS115 | warning | cross-region Paper 26.3 `Leashable#setLeashHolder` attachment without dual-entity `isOwnedByCurrentRegion` guard |
 
 Severities mean specific things:
 

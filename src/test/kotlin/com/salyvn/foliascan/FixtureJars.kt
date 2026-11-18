@@ -148,6 +148,13 @@ object FixtureJars {
         foliaSupported = true,
     )
 
+    fun v110(): Path = build(
+        jarName = "v110-plugin",
+        packagePath = "fixtures/v110/",
+        main = "fixtures.v110.V110Plugin",
+        foliaSupported = true,
+    )
+
     private fun build(
         jarName: String,
         main: String?,

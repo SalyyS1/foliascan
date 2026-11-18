@@ -206,7 +206,7 @@ object SarifReporter {
 
     private fun flowStepRole(finding: Finding, idx: Int, lastIdx: Int): String = when {
         idx == 0 -> when (finding.ruleId) {
-            "FS081", "FS105" -> "Concurrent scheduler entry"
+            "FS081", "FS105", "FS112", "FS114" -> "Concurrent scheduler entry"
             "FS088" -> "Async chunk-generation taint entry"
             "FS090" -> "Block-entity snapshot capture and schedule"
             "FS101" -> "Coroutine suspension or async continuation entry"
@@ -223,6 +223,11 @@ object SarifReporter {
             "FS105" -> "Unsynchronized instance collection mutation sink (${finding.evidence})"
             "FS106" -> "Unowned captured entity mutation sink (${finding.evidence})"
             "FS107" -> "Captured live Chunk access sink (${finding.evidence})"
+            "FS111" -> "Off-region DataComponent or live slot mutation sink (${finding.evidence})"
+            "FS112" -> "Concurrent shared Inventory or Merchant mutation sink (${finding.evidence})"
+            "FS113" -> "Off-region InventoryView mutation sink (${finding.evidence})"
+            "FS114" -> "Parallel regional Scoreboard race sink (${finding.evidence})"
+            "FS115" -> "Cross-region Leashable attachment sink (${finding.evidence})"
             else -> "Region-guarded sink (${finding.evidence})"
         }
         else -> "In-jar call, closure wrapper, or interface dispatch hop $idx"

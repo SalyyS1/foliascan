@@ -524,7 +524,7 @@
     <div class="topbar-inner">
       <div class="brand">
         <span>FoliaScan</span>
-        <span class="brand-tag">v1.0.0 Browser Bytecode Scanner</span>
+        <span class="brand-tag">v1.1.0 Browser Bytecode Scanner</span>
       </div>
       <nav class="nav-links" aria-label="Primary links">
         <a href="https://github.com/SalyyS1/foliascan">GitHub Repository</a>
@@ -1044,6 +1044,46 @@
         why: "CraftLootTable#fillInventory and #populateLoot construct NMS LootParams against live ServerLevel world/entity state and mutate target Inventory slots under TickThread.ensureTickThread.",
         fix: "Invoke LootTable#fillInventory or #populateLoot inside Bukkit.getRegionScheduler().execute(plugin, originLocation, task).",
         provenance: "0001-Region-Threading-Base.patch (CraftLootTable#fillInventory and #populateLoot ServerLevel region checks)"
+      },
+      FS111: {
+        id: "FS111",
+        severity: "WARNING",
+        title: "Paper 26.3 DataComponentHolder or live container ItemStack component mutated off-region",
+        why: "DataComponentHolder and CraftItemStack handles obtained from live Inventory or EntityEquipment slots wrap live NMS PatchedDataComponentMap storage. Mutating components off-region races with regional ticking and packet serialization.",
+        fix: "Mutate entity or container DataComponents inside the owning EntityScheduler or RegionScheduler callback, or clone() / construct a fresh detached ItemStack before mutating asynchronously.",
+        provenance: "0001-Region-Threading-Base.patch (PaperDataComponentAdapter & CraftItemStack#handle PatchedDataComponentMap)"
+      },
+      FS112: {
+        id: "FS112",
+        severity: "WARNING",
+        title: "Shared Inventory or Merchant field mutated concurrently across Folia regions",
+        why: "Mutating a shared static or singleton instance Inventory or Merchant field across RegionScheduler, EntityScheduler, or AsyncScheduler callbacks races on backing NonNullList<ItemStack> arrays and viewer lists.",
+        fix: "Guard shared Inventory mutations behind an explicit lock, serialize through a single coordinator, or isolate per-viewer Inventory instances on player.getScheduler().",
+        provenance: "0001-Region-Threading-Base.patch (CraftInventoryCustom$MinecraftInventory NonNullList<ItemStack>)"
+      },
+      FS113: {
+        id: "FS113",
+        severity: "WARNING",
+        title: "Open InventoryView slot, cursor, or title mutated from off-region context",
+        why: "org.bukkit.inventory.InventoryView bridges a player's active AbstractContainerMenu cursor and container slots. Calling setItem, setCursor, setTitle, or close off-region throws IllegalStateException or desynchronizes stateId.",
+        fix: "Mutate or close an active InventoryView inside the viewing player's player.getScheduler().run(plugin, task, null) callback.",
+        provenance: "0001-Region-Threading-Base.patch (CraftInventoryView & ServerPlayer#containerMenu TickThread guards)"
+      },
+      FS114: {
+        id: "FS114",
+        severity: "WARNING",
+        title: "Scoreboard Team, Objective, or Score mutated across parallel regional schedulers",
+        why: "Bukkit's main Scoreboard, Team entry sets, Objective display properties, and Score maps are shared server-wide without locking. Mutating them across parallel RegionScheduler or EntityScheduler tasks causes ConcurrentModificationException.",
+        fix: "Dispatch shared Scoreboard, Team, Objective, and Score mutations onto Bukkit.getGlobalRegionScheduler().execute(plugin, ...) or migrate per-player HUDs to packet-level Adventure APIs.",
+        provenance: "0001-Region-Threading-Base.patch (CraftScoreboard, CraftTeam, CraftObjective, and CraftScore shared state)"
+      },
+      FS115: {
+        id: "FS115",
+        severity: "WARNING",
+        title: "Cross-region Leashable.setLeashHolder attachment risks dual-entity region violation",
+        why: "Paper 26.3 Leashable and LivingEntity#setLeashHolder link two world entities across ticks. Calling setLeashHolder off-region or without verifying Bukkit.isOwnedByCurrentRegion on both entities throws IllegalStateException across region boundaries.",
+        fix: "Verify Bukkit.isOwnedByCurrentRegion on both entities inside the owning scheduler callback before calling setLeashHolder(holder).",
+        provenance: "0001-Region-Threading-Base.patch (PaperLeashable & CraftEntity#setLeashHolder dual-entity TickThread assertions)"
       }
     };
 
@@ -1484,15 +1524,20 @@
         pos += 2;
       }
 
+      const declaredFields = [];
       const declaredMethods = [];
       let sourceFile = null;
 
-      // Walk fields, methods, and class attributes to capture method signatures and SourceFile
+      // Walk fields, methods, and class attributes to capture field/method signatures and SourceFile
       if (pos + 2 <= bytes.byteLength) {
         const fieldsCount = view.getUint16(pos, false);
         pos += 2;
         for (let f = 0; f < fieldsCount && pos + 8 <= bytes.byteLength; f++) {
+          const fAccess = view.getUint16(pos, false);
+          const fName = utf8At(view.getUint16(pos + 2, false)) || "";
+          const fDesc = utf8At(view.getUint16(pos + 4, false)) || "";
           const attrCount = view.getUint16(pos + 6, false);
+          declaredFields.push({ access: fAccess, name: fName, descriptor: fDesc });
           pos += 8;
           for (let a = 0; a < attrCount && pos + 6 <= bytes.byteLength; a++) {
             const attrLen = view.getUint32(pos + 2, false);
@@ -1570,6 +1615,7 @@
         minorVersion,
         accessFlags,
         sourceFile,
+        declaredFields,
         declaredMethods,
         methodRefs,
         fieldRefs,
@@ -2173,6 +2219,99 @@
             (ref.name === "fillInventory" || ref.name === "populateLoot")
           ) {
             emitOnce(RULES.FS110, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS111: Paper 26.3 DataComponentHolder or live container ItemStack component mutated off-region
+          if (
+            classHasAsyncSignal &&
+            (ref.owner === "io/papermc/paper/datacomponent/DataComponentHolder" ||
+              TILE_ENTITY_OWNERS.has(ref.owner) ||
+              ref.owner.startsWith("org/bukkit/entity/")) &&
+            (ref.name === "setData" || ref.name === "unsetData" || ref.name === "resetData" || ref.name === "copyDataFrom")
+          ) {
+            emitOnce(RULES.FS111, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS113: Open InventoryView slot, cursor, or title mutated off-region
+          if (
+            classHasAsyncSignal &&
+            (ref.owner === "org/bukkit/inventory/InventoryView" || ref.owner.startsWith("org/bukkit/inventory/view/")) &&
+            (ref.name === "setItem" || ref.name === "setCursor" || ref.name === "close" ||
+             ref.name === "setTitle" || ref.name === "setProperty" || ref.name === "open")
+          ) {
+            emitOnce(RULES.FS113, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS115: Leashable.setLeashHolder / getLeashHolder cross-region hazard
+          if (
+            (ref.owner === "io/papermc/paper/entity/Leashable" || ref.owner.startsWith("org/bukkit/entity/")) &&
+            (ref.name === "setLeashHolder" || (classHasAsyncSignal && (ref.name === "getLeashHolder" || ref.name === "isLeashed")))
+          ) {
+            const guardedLeash = model.methodRefs.some((r) => r.name === "isOwnedByCurrentRegion");
+            if (classHasAsyncSignal || !guardedLeash) {
+              emitOnce(RULES.FS115, simpleOwner + "." + ref.name + "()", false);
+            }
+          }
+        }
+
+        const classHasParallelRegion = model.methodRefs.some(
+          (r) => r.owner.endsWith("/RegionScheduler") || r.owner.endsWith("/EntityScheduler")
+        );
+
+        // FS111 (live container slot ItemStack component mutation off-region)
+        if (classHasAsyncSignal) {
+          const readsLiveSlot = model.methodRefs.some(
+            (r) =>
+              r.owner.startsWith("org/bukkit/inventory/") &&
+              (r.name === "getItem" || r.name === "getItemInMainHand" || r.name === "getItemInOffHand" ||
+               r.name === "getHelmet" || r.name === "getChestplate" || r.name === "getCursor")
+          );
+          const mutatesItemStack = model.methodRefs.find(
+            (r) =>
+              r.owner === "org/bukkit/inventory/ItemStack" &&
+              (r.name === "setData" || r.name === "unsetData" || r.name === "resetData" ||
+               r.name === "copyDataFrom" || r.name === "setItemMeta" || r.name === "editMeta")
+          );
+          if (readsLiveSlot && mutatesItemStack) {
+            emitOnce(RULES.FS111, "live slot ItemStack." + mutatesItemStack.name + "()", false);
+          }
+        }
+
+        // FS112: Shared Inventory or Merchant field mutated across concurrent Folia schedulers
+        const hasSharedInvField =
+          (model.declaredFields || []).some(
+            (f) => f.descriptor === "Lorg/bukkit/inventory/Inventory;" || f.descriptor === "Lorg/bukkit/inventory/Merchant;"
+          ) ||
+          model.fieldRefs.some(
+            (f) => f.descriptor === "Lorg/bukkit/inventory/Inventory;" || f.descriptor === "Lorg/bukkit/inventory/Merchant;"
+          );
+        if (hasSharedInvField && (classHasParallelRegion || classHasAsyncSignal)) {
+          const sharedMut = model.methodRefs.find(
+            (r) =>
+              (r.owner === "org/bukkit/inventory/Inventory" &&
+                (r.name === "setItem" || r.name === "addItem" || r.name === "removeItem" || r.name === "clear" || r.name === "setContents")) ||
+              (r.owner === "org/bukkit/inventory/Merchant" && (r.name === "setRecipes" || r.name === "setRecipe"))
+          );
+          if (sharedMut) {
+            emitOnce(RULES.FS112, "Shared field mutated via " + sharedMut.name + "()", false);
+          }
+        }
+
+        // FS114: Scoreboard Team, Objective, or Score mutated across parallel RegionScheduler / EntityScheduler
+        if (classHasParallelRegion && !classHasAsyncSignal) {
+          const sbMut = model.methodRefs.find(
+            (r) =>
+              ((r.owner === "org/bukkit/scoreboard/Team" ||
+                r.owner === "org/bukkit/scoreboard/Objective" ||
+                r.owner === "org/bukkit/scoreboard/Score") &&
+                (r.name === "addEntry" || r.name === "removeEntry" || r.name === "setPrefix" ||
+                 r.name === "prefix" || r.name === "setDisplayName" || r.name === "displayName" ||
+                 r.name === "setScore" || r.name === "resetScore")) ||
+              (r.owner === "org/bukkit/scoreboard/Scoreboard" && r.name === "resetScores")
+          );
+          if (sbMut) {
+            const sbOwner = sbMut.owner.slice(sbMut.owner.lastIndexOf("/") + 1);
+            emitOnce(RULES.FS114, sbOwner + "." + sbMut.name + "()", false);
           }
         }
 
@@ -3210,7 +3349,7 @@
     downloadJsonBtn.addEventListener("click", () => {
       const payload = {
         tool: "foliascan-browser",
-        toolVersion: "1.0.0",
+        toolVersion: "1.1.0",
         scanShadedDependencies: scanShadedToggle.checked,
         jars: currentReports
       };

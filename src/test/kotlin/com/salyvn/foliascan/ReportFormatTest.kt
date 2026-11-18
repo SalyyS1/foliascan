@@ -321,4 +321,36 @@ class ReportFormatTest {
         val fps = firstResult["partialFingerprints"]!!.jsonObject
         assertTrue(fps["foliascan/structuralHash/v2"]!!.jsonPrimitive.content.startsWith("sha256-16:"))
     }
+
+    @Test
+    fun `sarif emits role-specific codeFlows for v110 DataComponent shared Inventory and parallel Scoreboard rules`() {
+        val v110Report = ScanReport(
+            toolVersion = "1.1.0",
+            jars = listOf(JarScanner().scan(FixtureJars.v110())),
+        )
+        val sarif = Json.parseToJsonElement(SarifReporter.render(v110Report)).jsonObject
+        val results = sarif["runs"]!!.jsonArray.single().jsonObject["results"]!!.jsonArray
+
+        val fs112 = results.first { it.jsonObject["ruleId"]!!.jsonPrimitive.content == "FS112" }.jsonObject
+        val fs112Locs = fs112["codeFlows"]!!.jsonArray.single().jsonObject["threadFlows"]!!
+            .jsonArray.single().jsonObject["locations"]!!.jsonArray
+        assertTrue(fs112Locs.size >= 3)
+        assertTrue(
+            fs112Locs.first().jsonObject["location"]!!.jsonObject["message"]!!
+                .jsonObject["text"]!!.jsonPrimitive.content.startsWith("Concurrent scheduler entry:"),
+        )
+        assertTrue(
+            fs112Locs.last().jsonObject["location"]!!.jsonObject["message"]!!
+                .jsonObject["text"]!!.jsonPrimitive.content.startsWith("Concurrent shared Inventory or Merchant mutation sink"),
+        )
+
+        val fs114 = results.first { it.jsonObject["ruleId"]!!.jsonPrimitive.content == "FS114" }.jsonObject
+        val fs114Locs = fs114["codeFlows"]!!.jsonArray.single().jsonObject["threadFlows"]!!
+            .jsonArray.single().jsonObject["locations"]!!.jsonArray
+        assertTrue(fs114Locs.size >= 2)
+        assertTrue(
+            fs114Locs.last().jsonObject["location"]!!.jsonObject["message"]!!
+                .jsonObject["text"]!!.jsonPrimitive.content.startsWith("Parallel regional Scoreboard race sink"),
+        )
+    }
 }

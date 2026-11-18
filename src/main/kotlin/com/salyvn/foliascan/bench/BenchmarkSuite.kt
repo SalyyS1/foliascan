@@ -53,6 +53,7 @@ object BenchmarkSuite {
 
     val EXPECTED_RULES: List<String> = listOf(
         "FS060", "FS101", "FS102", "FS103", "FS104", "FS105", "FS106", "FS108",
+        "FS111", "FS112", "FS113", "FS114", "FS115",
     )
 
     fun run(iterations: Int = 20): BenchmarkMetrics {
@@ -269,8 +270,35 @@ object BenchmarkSuite {
             false,
         )
         mv.visitInsn(Opcodes.POP)
+        val l3 = Label()
+        mv.visitLabel(l3)
+        mv.visitLineNumber(16, l3)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "io/papermc/paper/datacomponent/DataComponentHolder")
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitMethodInsn(
+            Opcodes.INVOKEINTERFACE,
+            "io/papermc/paper/datacomponent/DataComponentHolder",
+            "setData",
+            "(Ljava/lang/Object;Ljava/lang/Object;)V",
+            true,
+        )
+        val l4 = Label()
+        mv.visitLabel(l4)
+        mv.visitLineNumber(17, l4)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "org/bukkit/inventory/InventoryView")
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitMethodInsn(
+            Opcodes.INVOKEINTERFACE,
+            "org/bukkit/inventory/InventoryView",
+            "setCursor",
+            "(Ljava/lang/Object;)V",
+            true,
+        )
         mv.visitInsn(Opcodes.RETURN)
-        mv.visitMaxs(3, 3)
+        mv.visitMaxs(4, 3)
         mv.visitEnd()
         cw.visitEnd()
         return cw.toByteArray()
@@ -282,6 +310,7 @@ object BenchmarkSuite {
         cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, owner, null, "java/lang/Object", null)
         cw.visitSource("CooldownRegistry.kt", null)
         cw.visitField(Opcodes.ACC_PRIVATE or Opcodes.ACC_FINAL, "cooldowns", "Ljava/util/Map;", null, null).visitEnd()
+        cw.visitField(Opcodes.ACC_PRIVATE or Opcodes.ACC_FINAL, "sharedVault", "Lorg/bukkit/inventory/Inventory;", null, null).visitEnd()
 
         val init = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null)
         init.visitCode()
@@ -314,6 +343,31 @@ object BenchmarkSuite {
             true,
         )
         rec.visitInsn(Opcodes.POP)
+        val l2 = Label()
+        rec.visitLabel(l2)
+        rec.visitLineNumber(24, l2)
+        rec.visitVarInsn(Opcodes.ALOAD, 0)
+        rec.visitFieldInsn(Opcodes.GETFIELD, owner, "sharedVault", "Lorg/bukkit/inventory/Inventory;")
+        rec.visitMethodInsn(
+            Opcodes.INVOKEINTERFACE,
+            "org/bukkit/inventory/Inventory",
+            "clear",
+            "()V",
+            true,
+        )
+        val l3 = Label()
+        rec.visitLabel(l3)
+        rec.visitLineNumber(26, l3)
+        rec.visitInsn(Opcodes.ACONST_NULL)
+        rec.visitTypeInsn(Opcodes.CHECKCAST, "org/bukkit/scoreboard/Team")
+        rec.visitLdcInsn("region-race")
+        rec.visitMethodInsn(
+            Opcodes.INVOKEINTERFACE,
+            "org/bukkit/scoreboard/Team",
+            "addEntry",
+            "(Ljava/lang/String;)V",
+            true,
+        )
         rec.visitInsn(Opcodes.RETURN)
         rec.visitMaxs(4, 2)
         rec.visitEnd()
@@ -613,6 +667,23 @@ object BenchmarkSuite {
             "(Ljava/lang/Runnable;)V",
             false,
         )
+
+        // FS115: Leashable.setLeashHolder(entity) without Bukkit.isOwnedByCurrentRegion guard
+        val l4d = Label()
+        runAll.visitLabel(l4d)
+        runAll.visitLineNumber(69, l4d)
+        runAll.visitInsn(Opcodes.ACONST_NULL)
+        runAll.visitTypeInsn(Opcodes.CHECKCAST, "io/papermc/paper/entity/Leashable")
+        runAll.visitInsn(Opcodes.ACONST_NULL)
+        runAll.visitTypeInsn(Opcodes.CHECKCAST, "org/bukkit/entity/Entity")
+        runAll.visitMethodInsn(
+            Opcodes.INVOKEINTERFACE,
+            "io/papermc/paper/entity/Leashable",
+            "setLeashHolder",
+            "(Lorg/bukkit/entity/Entity;)Z",
+            true,
+        )
+        runAll.visitInsn(Opcodes.POP)
         runAll.visitInsn(Opcodes.RETURN)
         runAll.visitMaxs(6, 6)
         runAll.visitEnd()
@@ -851,6 +922,39 @@ object BenchmarkSuite {
         safeTick.visitInsn(Opcodes.RETURN)
         safeTick.visitMaxs(4, 3)
         safeTick.visitEnd()
+
+        val safeLeash = cw.visitMethod(
+            Opcodes.ACC_PUBLIC,
+            "safeGuardLeash",
+            "(Lio/papermc/paper/entity/Leashable;Lorg/bukkit/entity/Entity;)V",
+            null,
+            null,
+        )
+        safeLeash.visitCode()
+        safeLeash.visitVarInsn(Opcodes.ALOAD, 2)
+        safeLeash.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "org/bukkit/Bukkit",
+            "isOwnedByCurrentRegion",
+            "(Lorg/bukkit/entity/Entity;)Z",
+            false,
+        )
+        val doneLbl = Label()
+        safeLeash.visitJumpInsn(Opcodes.IFEQ, doneLbl)
+        safeLeash.visitVarInsn(Opcodes.ALOAD, 1)
+        safeLeash.visitVarInsn(Opcodes.ALOAD, 2)
+        safeLeash.visitMethodInsn(
+            Opcodes.INVOKEINTERFACE,
+            "io/papermc/paper/entity/Leashable",
+            "setLeashHolder",
+            "(Lorg/bukkit/entity/Entity;)Z",
+            true,
+        )
+        safeLeash.visitInsn(Opcodes.POP)
+        safeLeash.visitLabel(doneLbl)
+        safeLeash.visitInsn(Opcodes.RETURN)
+        safeLeash.visitMaxs(2, 3)
+        safeLeash.visitEnd()
 
         cw.visitEnd()
         return cw.toByteArray()

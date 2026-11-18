@@ -41,6 +41,7 @@ class FindingCollector(
         collectPatcher()
         val (unsyncFields, unsyncGetters) = discoverUnsyncStaticCollections()
         val (unsyncInstanceFields, unsyncInstanceGetters) = discoverUnsyncInstanceCollections()
+        val (sharedStaticInvs, sharedInstanceInvs, sharedInvGetters) = discoverSharedInventoryFields()
         val parallelRegionTasks = discoverParallelRegionTasks()
         for (model in jar.classes.values) {
             val blamed = model.internalName in reportable
@@ -63,11 +64,12 @@ class FindingCollector(
                     }
                 }
                 if (blamed) {
+                    val parallelOrigin = parallelRegionTasks[methodKey]
                     collectUnsyncStaticMutations(
                         model = model,
                         method = method,
                         context = context,
-                        parallelOrigin = parallelRegionTasks[methodKey],
+                        parallelOrigin = parallelOrigin,
                         unsyncFields = unsyncFields,
                         unsyncGetters = unsyncGetters,
                     )
@@ -75,9 +77,34 @@ class FindingCollector(
                         model = model,
                         method = method,
                         context = context,
-                        parallelOrigin = parallelRegionTasks[methodKey],
+                        parallelOrigin = parallelOrigin,
                         unsyncFields = unsyncInstanceFields,
                         unsyncGetters = unsyncInstanceGetters,
+                    )
+                    collectDataComponentHazards(
+                        model = model,
+                        method = method,
+                        context = context,
+                    )
+                    collectSharedInventoryMutations(
+                        model = model,
+                        method = method,
+                        context = context,
+                        parallelOrigin = parallelOrigin,
+                        sharedStaticInvs = sharedStaticInvs,
+                        sharedInstanceInvs = sharedInstanceInvs,
+                        sharedInvGetters = sharedInvGetters,
+                    )
+                    collectParallelScoreboardRaces(
+                        model = model,
+                        method = method,
+                        context = context,
+                        parallelOrigin = parallelOrigin,
+                    )
+                    collectLeashableHazards(
+                        model = model,
+                        method = method,
+                        context = context,
                     )
                     collectLifecycleAndTeleportRules(
                         model = model,
@@ -383,14 +410,25 @@ class FindingCollector(
     private fun discoverParallelRegionTasks(): Map<MethodKey, OffRegionOrigin> {
         val out = mutableMapOf<MethodKey, OffRegionOrigin>()
         val queue = ArrayDeque<MethodKey>()
+        val regionWrappers = OffRegionContextResolver.discoverRegionReentryWrappers(jar)
         for (model in jar.classes.values) {
             for (method in model.methods) {
                 val callerKey = MethodKey(model.internalName, method.id)
                 val firstLine = method.instructions.firstNotNullOfOrNull { it.line }
                 method.instructions.forEachIndexed { idx, insn ->
-                    if (insn.kind == InsnKind.CALL && insn.name in PARALLEL_REGION_SUBMITTERS &&
+                    if (insn.kind != InsnKind.CALL) return@forEachIndexed
+                    val isDirectParallel = insn.name in PARALLEL_REGION_SUBMITTERS &&
                         PARALLEL_REGION_OWNERS.any { insn.owner.endsWith(it) }
-                    ) {
+                    val isWrapperParallel = !isDirectParallel && jar.contains(insn.owner) &&
+                        jar.resolveCallTargets(insn).let { targets ->
+                            targets.isNotEmpty() && targets.all { t ->
+                                regionWrappers[t]?.values?.any {
+                                    it == OffRegionContextResolver.RegionWrapperKind.LOCATION_REGION ||
+                                        it == OffRegionContextResolver.RegionWrapperKind.ENTITY_OR_COROUTINE_REGION
+                                } == true
+                            }
+                        }
+                    if (isDirectParallel || isWrapperParallel) {
                         val reason = "submitted via ${insn.owner.substringAfterLast('/')}.${insn.name}"
                         for ((resolvedTarget, _) in resolveSubmittedTasks(method, idx)) {
                             val targetClass = jar.get(resolvedTarget.owner)
@@ -423,11 +461,20 @@ class FindingCollector(
             val origin = out[cur] ?: continue
             val curModel = jar.get(cur.owner) ?: continue
             val body = curModel.method(cur.method) ?: continue
+            val nonParallelLambdaTargets = mutableSetOf<MethodKey>()
+            body.instructions.forEachIndexed { idx, insn ->
+                if (insn.kind == InsnKind.CALL &&
+                    (insn.owner.endsWith("/GlobalRegionScheduler") || insn.owner.endsWith("/AsyncScheduler"))
+                ) {
+                    resolveSubmittedTasks(body, idx).forEach { (k, _) -> nonParallelLambdaTargets += k }
+                }
+            }
             for (insn in body.instructions) {
                 val targets = when {
                     insn.kind == InsnKind.CALL && jar.contains(insn.owner) ->
                         jar.resolveCallTargets(insn)
                     insn.kind == InsnKind.INDY && insn.lambdaTarget != null &&
+                        insn.lambdaTarget !in nonParallelLambdaTargets &&
                         jar.contains(insn.lambdaTarget.owner) -> listOf(insn.lambdaTarget)
                     else -> emptyList()
                 }
@@ -1304,6 +1351,385 @@ class FindingCollector(
         return paramsSection.contains("Lorg/bukkit/Chunk;")
     }
 
+    /**
+     * Discovers static and non-ephemeral instance fields holding shared `Inventory` or `Merchant`
+     * references, along with unsynchronized zero-arg getter methods returning those fields.
+     */
+    private fun discoverSharedInventoryFields(): Triple<
+        Map<Pair<String, String>, String>,
+        Map<Pair<String, String>, String>,
+        Map<Pair<String, String>, Pair<Pair<String, String>, String>>,
+        > {
+        val staticFields = mutableMapOf<Pair<String, String>, String>()
+        val instanceFields = mutableMapOf<Pair<String, String>, String>()
+        for (model in jar.classes.values) {
+            val isEphemeral = '$' in model.internalName || jar.inheritsAny(model.internalName, EPHEMERAL_TASK_SUPERTYPES)
+            for (field in model.fields) {
+                val kind = SHARED_INVENTORY_FIELD_DESCS[field.desc] ?: continue
+                if ((field.access and Opcodes.ACC_STATIC) != 0) {
+                    staticFields[model.internalName to field.name] = kind
+                } else if (!isEphemeral) {
+                    instanceFields[model.internalName to field.name] = kind
+                }
+            }
+            for (method in model.methods) {
+                if (method.id.name != "<init>" && method.id.name != "<clinit>" && method.id.name != "onEnable") continue
+                var lastFactory: String? = null
+                for (insn in method.instructions) {
+                    when (insn.kind) {
+                        InsnKind.CALL -> if (
+                            insn.owner in setOf("org/bukkit/Bukkit", "org/bukkit/Server") &&
+                            (insn.name == "createInventory" || insn.name == "createMerchant")
+                        ) {
+                            lastFactory = if (insn.name == "createMerchant") "Merchant" else "Inventory"
+                        }
+                        InsnKind.FIELD -> {
+                            if (insn.opcode == Opcodes.PUTSTATIC && lastFactory != null) {
+                                staticFields[insn.owner to insn.name] = lastFactory
+                            } else if (insn.opcode == Opcodes.PUTFIELD && lastFactory != null && !isEphemeral) {
+                                instanceFields[insn.owner to insn.name] = lastFactory
+                            }
+                            lastFactory = null
+                        }
+                        else -> Unit
+                    }
+                }
+            }
+        }
+
+        val getters = mutableMapOf<Pair<String, String>, Pair<Pair<String, String>, String>>()
+        for (model in jar.classes.values) {
+            for (method in model.methods) {
+                if (!method.id.desc.startsWith("()")) continue
+                if ((method.access and Opcodes.ACC_SYNCHRONIZED) != 0) continue
+                if (method.instructions.any { it.kind == InsnKind.MONITOR }) continue
+                val reads = method.instructions.filter { insn ->
+                    insn.kind == InsnKind.FIELD && (
+                        (insn.opcode == Opcodes.GETSTATIC && (insn.owner to insn.name) in staticFields) ||
+                            (insn.opcode == Opcodes.GETFIELD && (insn.owner to insn.name) in instanceFields)
+                        )
+                }
+                if (reads.size == 1) {
+                    val read = reads.single()
+                    val fKey = read.owner to read.name
+                    val kind = staticFields[fKey] ?: instanceFields[fKey] ?: continue
+                    getters[model.internalName to method.id.name] = fKey to kind
+                }
+            }
+        }
+        return Triple(staticFields, instanceFields, getters)
+    }
+
+    /**
+     * Collects FS111:
+     *  1. Off-region invocations of Paper 26.3 `DataComponentHolder` mutators (`setData`,
+     *     `unsetData`, `resetData`, `copyDataFrom`) on `DataComponentHolder`, `Entity`, or `TileState`.
+     *  2. Intra-method ASM dataflow (`flowInstructions` tracking operand stack + `ALOAD`/`ASTORE`
+     *     local slots) from live container/equipment slot getters (`Inventory#getItem`,
+     *     `PlayerInventory#getItemInMainHand`, `EntityEquipment#get*`, `InventoryView#getCursor`)
+     *     to `ItemStack` component/meta mutators while sparing `new ItemStack(...)` and `clone()`.
+     */
+    private fun collectDataComponentHazards(
+        model: ClassModel,
+        method: MethodModel,
+        context: OffRegionOrigin?,
+    ) {
+        val rule = RuleCatalog.dataComponentHolderOffRegion
+        if (!enabled(rule) || context == null) return
+
+        var pendingLiveStack: String? = null
+        val liveStackSlots = mutableMapOf<Int, String>()
+
+        for (insn in method.flowInstructions) {
+            when (insn.kind) {
+                InsnKind.TYPE_REF -> if (insn.name == "new" && insn.owner == "org/bukkit/inventory/ItemStack") {
+                    pendingLiveStack = null
+                }
+
+                InsnKind.CALL -> {
+                    val isHolderDirectMutator = insn.name in DATA_COMPONENT_METHODS && (
+                        insn.owner == DATA_COMPONENT_HOLDER_OWNER ||
+                            (insn.owner.startsWith("org/bukkit/entity/") && insn.owner !in NON_ENTITY_ENUM_OWNERS) ||
+                            insn.owner in RuleCatalog.TILE_ENTITY_OWNERS
+                        )
+                    if (isHolderDirectMutator) {
+                        val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, context)
+                        val chainSuffix = if (sinkHops.size > 1) {
+                            "; call chain: ${sinkHops.joinToString(" -> ") { it.renderShort() }}"
+                        } else {
+                            ""
+                        }
+                        out += finding(
+                            rule = rule,
+                            evidence = "${insn.owner.substringAfterLast('/')}.${insn.name}()",
+                            why = rule.why,
+                            location = location(model, method, insn),
+                            contextual = true,
+                            context = "reached off-region: ${context.reason} (entry point ${shortKey(context.entryPoint)}, " +
+                                "${context.depth} call(s) deep$chainSuffix)",
+                            callChain = chainLocations,
+                        )
+                        pendingLiveStack = null
+                    } else if (insn.owner in LIVE_ITEM_SOURCE_OWNERS && insn.name in LIVE_ITEM_GETTERS) {
+                        pendingLiveStack = "${insn.owner.substringAfterLast('/')}.${insn.name}()"
+                    } else if (insn.owner == "org/bukkit/inventory/ItemStack" &&
+                        (insn.name == "clone" || insn.name == "of" || insn.name == "<init>")
+                    ) {
+                        pendingLiveStack = null
+                    } else if ((insn.owner == "org/bukkit/inventory/ItemStack" || insn.owner == DATA_COMPONENT_HOLDER_OWNER) &&
+                        insn.name in LIVE_ITEMSTACK_MUTATORS
+                    ) {
+                        val source = pendingLiveStack
+                        if (source != null) {
+                            val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, context)
+                            val chainSuffix = if (sinkHops.size > 1) {
+                                "; call chain: ${sinkHops.joinToString(" -> ") { it.renderShort() }}"
+                            } else {
+                                ""
+                            }
+                            out += finding(
+                                rule = rule,
+                                evidence = "live $source mutated via ${insn.owner.substringAfterLast('/')}.${insn.name}()",
+                                why = rule.why,
+                                location = location(model, method, insn),
+                                contextual = true,
+                                context = "live container/equipment ItemStack mutated off-region: ${context.reason}$chainSuffix",
+                                callChain = chainLocations,
+                            )
+                            pendingLiveStack = null
+                        }
+                    }
+                }
+
+                InsnKind.VAR -> {
+                    val slot = insn.name.toIntOrNull()
+                    if (slot != null) {
+                        if (insn.opcode == Opcodes.ASTORE) {
+                            val cur = pendingLiveStack
+                            if (cur != null) liveStackSlots[slot] = cur else liveStackSlots.remove(slot)
+                            pendingLiveStack = null
+                        } else if (insn.opcode == Opcodes.ALOAD) {
+                            liveStackSlots[slot]?.let { pendingLiveStack = it }
+                        }
+                    }
+                }
+
+                InsnKind.STACK_POP -> pendingLiveStack = null
+
+                else -> Unit
+            }
+        }
+    }
+
+    /**
+     * Collects FS112: shared static or singleton instance `Inventory` / `Merchant` fields mutated
+     * concurrently across `RegionScheduler`, `EntityScheduler`, or `AsyncScheduler` callbacks
+     * without `synchronized` protection.
+     */
+    private fun collectSharedInventoryMutations(
+        model: ClassModel,
+        method: MethodModel,
+        context: OffRegionOrigin?,
+        parallelOrigin: OffRegionOrigin?,
+        sharedStaticInvs: Map<Pair<String, String>, String>,
+        sharedInstanceInvs: Map<Pair<String, String>, String>,
+        sharedInvGetters: Map<Pair<String, String>, Pair<Pair<String, String>, String>>,
+    ) {
+        val rule = RuleCatalog.sharedInventoryConcurrentMutation
+        if (!enabled(rule)) return
+        if (sharedStaticInvs.isEmpty() && sharedInstanceInvs.isEmpty()) return
+        if (method.id.name == "<init>" || method.id.name == "<clinit>" ||
+            method.id.name == "onEnable" || method.id.name == "onDisable"
+        ) {
+            return
+        }
+        if ((method.access and Opcodes.ACC_SYNCHRONIZED) != 0) return
+        if (method.instructions.any { it.kind == InsnKind.MONITOR }) return
+
+        val effectiveOrigin = parallelOrigin ?: context ?: return
+        val locallyAllocatedOwners = method.instructions
+            .filter { it.kind == InsnKind.TYPE_REF && it.name == "new" }
+            .map { it.owner }
+            .toSet()
+
+        var pending: Pair<Pair<String, String>, String>? = null
+        val localSlots = mutableMapOf<Int, Pair<Pair<String, String>, String>>()
+
+        for (insn in method.flowInstructions) {
+            when (insn.kind) {
+                InsnKind.FIELD -> {
+                    val fKey = insn.owner to insn.name
+                    if (insn.opcode == Opcodes.GETSTATIC) {
+                        sharedStaticInvs[fKey]?.let { pending = fKey to it }
+                    } else if (insn.opcode == Opcodes.GETFIELD && insn.owner !in locallyAllocatedOwners) {
+                        sharedInstanceInvs[fKey]?.let { pending = fKey to it }
+                    }
+                }
+
+                InsnKind.VAR -> {
+                    val slot = insn.name.toIntOrNull()
+                    if (slot != null) {
+                        if (insn.opcode == Opcodes.ASTORE) {
+                            val cur = pending
+                            if (cur != null) localSlots[slot] = cur else localSlots.remove(slot)
+                            pending = null
+                        } else if (insn.opcode == Opcodes.ALOAD) {
+                            localSlots[slot]?.let { pending = it }
+                        }
+                    }
+                }
+
+                InsnKind.CALL -> {
+                    val getterHit = sharedInvGetters[insn.owner to insn.name]
+                    if (getterHit != null && getterHit.first.first !in locallyAllocatedOwners) {
+                        pending = getterHit
+                    } else if (pending != null) {
+                        val isInvMutator = insn.owner in SHARED_INVENTORY_MUTATOR_OWNERS &&
+                            insn.name in SHARED_INVENTORY_MUTATORS &&
+                            parallelOrigin != null && context == null
+                        val isMerchantMutator = insn.owner in SHARED_MERCHANT_OWNERS &&
+                            insn.name in SHARED_MERCHANT_MUTATORS
+                        if (isInvMutator || isMerchantMutator) {
+                            val (fieldKey, kindLabel) = pending
+                            val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, effectiveOrigin)
+                            val chainSuffix = if (sinkHops.size > 1) {
+                                "; call chain: ${sinkHops.joinToString(" -> ") { it.renderShort() }}"
+                            } else {
+                                ""
+                            }
+                            out += finding(
+                                rule = rule,
+                                evidence = "${fieldKey.first.substringAfterLast('/')}.${fieldKey.second} " +
+                                    "($kindLabel) mutated via ${insn.name}()",
+                                why = rule.why,
+                                location = location(model, method, insn),
+                                contextual = true,
+                                context = "concurrent shared $kindLabel mutation: ${effectiveOrigin.reason}$chainSuffix",
+                                callChain = chainLocations,
+                            )
+                            pending = null
+                        } else if (insn.owner in setOf("org/bukkit/Bukkit", "org/bukkit/Server") &&
+                            insn.name == "createInventory"
+                        ) {
+                            pending = null
+                        }
+                    }
+                }
+
+                else -> Unit
+            }
+        }
+    }
+
+    /**
+     * Collects FS114: Scoreboard `Team`, `Objective`, `Score`, or `Scoreboard#resetScores`
+     * mutated across parallel `RegionScheduler` or `EntityScheduler` callbacks without
+     * `GlobalRegionScheduler` serialization or `synchronized` locking.
+     */
+    private fun collectParallelScoreboardRaces(
+        model: ClassModel,
+        method: MethodModel,
+        context: OffRegionOrigin?,
+        parallelOrigin: OffRegionOrigin?,
+    ) {
+        val rule = RuleCatalog.parallelRegionScoreboardRace
+        if (!enabled(rule)) return
+        if (method.id.name == "<init>" || method.id.name == "<clinit>" ||
+            method.id.name == "onEnable" || method.id.name == "onDisable"
+        ) {
+            return
+        }
+        if ((method.access and Opcodes.ACC_SYNCHRONIZED) != 0) return
+        if (method.instructions.any { it.kind == InsnKind.MONITOR }) return
+
+        for (insn in method.instructions) {
+            if (insn.kind != InsnKind.CALL) continue
+            val isComponentMutator = insn.owner in SCOREBOARD_COMPONENT_OWNERS &&
+                insn.name in SCOREBOARD_COMPONENT_MUTATORS
+            val isBoardReset = insn.owner == "org/bukkit/scoreboard/Scoreboard" &&
+                insn.name in SCOREBOARD_RESET_METHODS
+
+            val activeOrigin = when {
+                parallelOrigin != null && context == null && (isComponentMutator || isBoardReset) -> parallelOrigin
+                context != null && !context.isGlobalTick && isBoardReset -> context
+                else -> null
+            } ?: continue
+
+            val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, activeOrigin)
+            val chainSuffix = if (sinkHops.size > 1) {
+                "; call chain: ${sinkHops.joinToString(" -> ") { it.renderShort() }}"
+            } else {
+                ""
+            }
+            out += finding(
+                rule = rule,
+                evidence = "${insn.owner.substringAfterLast('/')}.${insn.name}()",
+                why = rule.why,
+                location = location(model, method, insn),
+                contextual = true,
+                context = "concurrent regional scoreboard mutation: ${activeOrigin.reason}$chainSuffix",
+                callChain = chainLocations,
+            )
+        }
+    }
+
+    /**
+     * Collects FS115: Paper 26.3 `Leashable` / `LivingEntity#setLeashHolder` cross-region hazards:
+     *  1. Off-region (`context != null`) calls to `setLeashHolder`, `getLeashHolder`, or `isLeashed`.
+     *  2. Non-null `setLeashHolder(holder)` linking two distinct world entities without a
+     *     `Bukkit.isOwnedByCurrentRegion` guard in the method (while sparing `setLeashHolder(null)`).
+     */
+    private fun collectLeashableHazards(
+        model: ClassModel,
+        method: MethodModel,
+        context: OffRegionOrigin?,
+    ) {
+        val rule = RuleCatalog.crossRegionLeashableHazard
+        if (!enabled(rule)) return
+        val flow = method.flowInstructions
+        val hasOwnershipGuard = method.instructions.any {
+            it.kind == InsnKind.CALL && it.name == "isOwnedByCurrentRegion"
+        }
+
+        flow.forEachIndexed { idx, insn ->
+            if (insn.kind != InsnKind.CALL) return@forEachIndexed
+            val isLeashOwner = insn.owner == LEASHABLE_OWNER ||
+                (insn.owner.startsWith("org/bukkit/entity/") && insn.owner !in NON_ENTITY_ENUM_OWNERS)
+            if (!isLeashOwner) return@forEachIndexed
+
+            if (context != null && insn.name in LEASHABLE_METHODS) {
+                val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, context)
+                val chainSuffix = if (sinkHops.size > 1) {
+                    "; call chain: ${sinkHops.joinToString(" -> ") { it.renderShort() }}"
+                } else {
+                    ""
+                }
+                out += finding(
+                    rule = rule,
+                    evidence = "${insn.owner.substringAfterLast('/')}.${insn.name}()",
+                    why = rule.why,
+                    location = location(model, method, insn),
+                    contextual = true,
+                    context = "reached off-region: ${context.reason} (entry point ${shortKey(context.entryPoint)}, " +
+                        "${context.depth} call(s) deep$chainSuffix)",
+                    callChain = chainLocations,
+                )
+            } else if (context == null && insn.name == "setLeashHolder") {
+                val isNullDetach = idx > 0 && flow[idx - 1].kind == InsnKind.NULL_CONST
+                if (!isNullDetach && !hasOwnershipGuard) {
+                    out += finding(
+                        rule = rule,
+                        evidence = "${insn.owner.substringAfterLast('/')}.setLeashHolder() without isOwnedByCurrentRegion guard",
+                        why = rule.why,
+                        location = location(model, method, insn),
+                        contextual = false,
+                        context = "dual-entity leash attachment across potential region boundary without Bukkit.isOwnedByCurrentRegion check",
+                    )
+                }
+            }
+        }
+    }
+
     private fun shortKey(key: MethodKey): String =
         "${key.owner.substringAfterLast('/')}.${key.method.name}"
 
@@ -1386,5 +1812,65 @@ class FindingCollector(
             "isEntitiesLoaded", "load", "unload", "addPluginChunkTicket",
             "removePluginChunkTicket", "setForceLoaded",
         )
+        const val DATA_COMPONENT_HOLDER_OWNER = "io/papermc/paper/datacomponent/DataComponentHolder"
+        val DATA_COMPONENT_METHODS = setOf(
+            "setData", "unsetData", "resetData", "copyDataFrom",
+        )
+        val LIVE_ITEM_SOURCE_OWNERS = setOf(
+            "org/bukkit/inventory/Inventory",
+            "org/bukkit/inventory/PlayerInventory",
+            "org/bukkit/inventory/EntityEquipment",
+            "org/bukkit/inventory/InventoryView",
+            "org/bukkit/inventory/CraftingInventory",
+            "org/bukkit/inventory/MerchantInventory",
+            "org/bukkit/inventory/AnvilInventory",
+            "org/bukkit/inventory/BrewerInventory",
+            "org/bukkit/inventory/FurnaceInventory",
+            "org/bukkit/inventory/SmithingInventory",
+        )
+        val LIVE_ITEM_GETTERS = setOf(
+            "getItem", "getItemInMainHand", "getItemInOffHand", "getItemInHand",
+            "getHelmet", "getChestplate", "getLeggings", "getBoots",
+            "getCursor", "getResult",
+        )
+        val LIVE_ITEMSTACK_MUTATORS = DATA_COMPONENT_METHODS + setOf(
+            "setItemMeta", "editMeta", "addUnsafeEnchantment", "addEnchantment",
+            "removeEnchantment", "setAmount", "setLore", "lore",
+        )
+        val SHARED_INVENTORY_FIELD_DESCS = mapOf(
+            "Lorg/bukkit/inventory/Inventory;" to "Inventory",
+            "Lorg/bukkit/inventory/Merchant;" to "Merchant",
+        )
+        val SHARED_INVENTORY_MUTATOR_OWNERS = setOf(
+            "org/bukkit/inventory/Inventory",
+            "org/bukkit/inventory/PlayerInventory",
+            "org/bukkit/inventory/CraftingInventory",
+            "org/bukkit/inventory/MerchantInventory",
+        )
+        val SHARED_INVENTORY_MUTATORS = setOf(
+            "setItem", "addItem", "removeItem", "removeItemAnySlot", "remove", "clear",
+            "setContents", "setStorageContents", "setMaxStackSize",
+        )
+        val SHARED_MERCHANT_OWNERS = setOf(
+            "org/bukkit/inventory/Merchant",
+            "org/bukkit/entity/AbstractVillager",
+            "org/bukkit/entity/Villager",
+            "org/bukkit/entity/WanderingTrader",
+        )
+        val SHARED_MERCHANT_MUTATORS = setOf("setRecipes", "setRecipe")
+        val SCOREBOARD_COMPONENT_OWNERS = setOf(
+            "org/bukkit/scoreboard/Team",
+            "org/bukkit/scoreboard/Objective",
+            "org/bukkit/scoreboard/Score",
+        )
+        val SCOREBOARD_COMPONENT_MUTATORS = setOf(
+            "addEntry", "removeEntry", "addEntities", "removeEntities", "addPlayer", "removePlayer",
+            "setPrefix", "setSuffix", "prefix", "suffix", "color", "setColor", "setOption",
+            "setAllowFriendlyFire", "setCanSeeFriendlyInvisibles", "setDisplayName", "displayName",
+            "setRenderType", "getScore", "setScore", "resetScore", "unregister",
+        )
+        val SCOREBOARD_RESET_METHODS = setOf("resetScores", "resetScoresFor")
+        const val LEASHABLE_OWNER = "io/papermc/paper/entity/Leashable"
+        val LEASHABLE_METHODS = setOf("setLeashHolder", "getLeashHolder", "isLeashed")
     }
 }

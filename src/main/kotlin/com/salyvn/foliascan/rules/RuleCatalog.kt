@@ -353,6 +353,8 @@ object RuleCatalog {
             "getScheduler", "teleportAsync", "values", "valueOf", "name", "ordinal",
             "addPassenger", "removePassenger", "setPassenger", "eject", "leaveVehicle",
             "openInventory", "openWorkbench", "openEnchanting", "openMerchant", "closeInventory",
+            "setData", "unsetData", "resetData", "copyDataFrom",
+            "setLeashHolder", "getLeashHolder", "isLeashed",
         ),
         contextual = true,
     )
@@ -603,7 +605,10 @@ object RuleCatalog {
             "CraftBlockEntityState, CraftContainer#getInventory, and RegionizedWorldData#tickBlockEntities",
         ),
         owners = TILE_ENTITY_OWNERS,
-        excludeMethods = setOf("values", "valueOf", "name", "ordinal"),
+        excludeMethods = setOf(
+            "values", "valueOf", "name", "ordinal",
+            "setData", "unsetData", "resetData", "copyDataFrom",
+        ),
         contextual = true,
     )
 
@@ -1080,6 +1085,105 @@ object RuleCatalog {
         contextual = true,
     )
 
+    // FS111-FS115: Folia v1.1.0 rules -------------------------------------------------------
+
+    val dataComponentHolderOffRegion = ConcurrencyRule(
+        id = "FS111",
+        severity = Severity.WARNING,
+        title = "Paper 26.3 DataComponentHolder or live container ItemStack component mutated off-region",
+        why = "In Paper and Folia 26.3, io.papermc.paper.datacomponent.DataComponentHolder (implemented by " +
+            "Entity, TileState, and ItemStack) and CraftItemStack handles obtained from live Inventory or " +
+            "EntityEquipment slots wrap live NMS PatchedDataComponentMap storage. Calling setData, unsetData, " +
+            "resetData, copyDataFrom, editMeta, or setItemMeta from an AsyncScheduler task, coroutine worker, " +
+            "Netty handler, or GlobalRegionScheduler mutates live regional component maps without synchronization, " +
+            "risking ConcurrentModificationException, packet encoding errors, or lost item components.",
+        fix = "Mutate entity or player equipment DataComponents inside entity.getScheduler().run(plugin, ...), " +
+            "mutate container ItemStack components inside Bukkit.getRegionScheduler().execute(plugin, blockLoc, ...), " +
+            "or clone() / construct a fresh detached ItemStack before mutating components asynchronously.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "PaperDataComponentAdapter, CraftItemStack#handle PatchedDataComponentMap, and TickThread.ensureTickThread",
+        ),
+    )
+
+    val sharedInventoryConcurrentMutation = ConcurrencyRule(
+        id = "FS112",
+        severity = Severity.WARNING,
+        title = "Shared Inventory or Merchant field mutated concurrently across Folia regions",
+        why = "Storing a shared Bukkit Inventory (such as a clan vault, auction GUI, or lobby menu) or Merchant " +
+            "instance in a static or singleton instance field and mutating its slots or recipes from RegionScheduler, " +
+            "EntityScheduler, or AsyncScheduler callbacks causes concurrent unsynchronized writes to the backing " +
+            "NMS NonNullList<ItemStack> and viewer lists across independent Folia threads, leading to item " +
+            "duplication, vanished stacks, and ArrayIndexOutOfBoundsException.",
+        fix = "Synchronize all slot reads and mutations on an explicit lock around the shared Inventory, " +
+            "serialize updates through a single coordinator, or give each player an isolated per-viewer " +
+            "Inventory instance mutated on player.getScheduler().",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftInventoryCustom\$MinecraftInventory NonNullList<ItemStack> & concurrent multi-region viewer access",
+        ),
+    )
+
+    val inventoryViewOffRegionMutation = CallRule(
+        id = "FS113",
+        severity = Severity.WARNING,
+        title = "Open InventoryView slot, cursor, or title mutated from off-region context",
+        why = "In Paper and Folia 1.21+..26.3, org.bukkit.inventory.InventoryView and its typed view subinterfaces " +
+            "bridge a player's active AbstractContainerMenu cursor, top container, and bottom inventory. Calling " +
+            "setItem, setCursor, setTitle, setProperty, or close from an AsyncScheduler task, coroutine worker, " +
+            "Netty handler, or GlobalRegionScheduler races with regional menu ticking and stateId packet " +
+            "synchronization, throwing IllegalStateException off-region.",
+        fix = "Mutate or close an active InventoryView inside the viewing player's player.getScheduler().run(plugin, task, null) callback.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftInventoryView & ServerPlayer#containerMenu TickThread.ensureTickThread guards",
+        ),
+        owners = setOf("org/bukkit/inventory/InventoryView"),
+        ownerPrefixes = setOf("org/bukkit/inventory/view/"),
+        methods = setOf(
+            "setItem", "setCursor", "close", "setTitle", "setProperty", "open",
+            "setRepairCost", "setMaximumRepairCost", "setRenameText",
+        ),
+        contextual = true,
+    )
+
+    val parallelRegionScoreboardRace = ConcurrencyRule(
+        id = "FS114",
+        severity = Severity.WARNING,
+        title = "Scoreboard Team, Objective, or Score mutated across parallel regional schedulers",
+        why = "While RegionScheduler and EntityScheduler own a specific chunk region or entity, Bukkit's main " +
+            "Scoreboard, Team entry sets, Objective display properties, and Score maps are shared server-wide " +
+            "without thread-safe locking. Mutating Team, Objective, Score, or Scoreboard#resetScores from parallel " +
+            "RegionScheduler or EntityScheduler callbacks races directly across concurrent regional threads, " +
+            "causing ConcurrentModificationException and corrupt team/score packets.",
+        fix = "Dispatch shared Scoreboard, Team, Objective, and Score mutations onto " +
+            "Bukkit.getGlobalRegionScheduler().execute(plugin, ...), guard custom locking explicitly, " +
+            "or render per-player sidebars and nametags via packet-level Adventure APIs.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftScoreboard, CraftTeam, CraftObjective, and CraftScore shared server-wide state across regional threads",
+        ),
+    )
+
+    val crossRegionLeashableHazard = ConcurrencyRule(
+        id = "FS115",
+        severity = Severity.WARNING,
+        title = "Cross-region Leashable.setLeashHolder attachment risks dual-entity region violation",
+        why = "Paper and Folia 26.3 expose io.papermc.paper.entity.Leashable across mobs, boats, chest boats, " +
+            "and happy ghasts alongside LivingEntity#setLeashHolder. Attaching a non-null leash holder links " +
+            "two distinct world entities (the leashed entity and the player, mob, or LeashHitch) across ticks. " +
+            "Calling setLeashHolder off-region throws IllegalStateException immediately, and calling " +
+            "setLeashHolder(holder) without verifying Bukkit.isOwnedByCurrentRegion on both entities throws " +
+            "IllegalStateException whenever the two entities straddle a chunk region boundary.",
+        fix = "Verify both entities reside in the current region via Bukkit.isOwnedByCurrentRegion(leashed) && " +
+            "Bukkit.isOwnedByCurrentRegion(holder) inside the owning scheduler callback before calling " +
+            "setLeashHolder(holder); detaching via setLeashHolder(null) requires only the leashed entity's EntityScheduler.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "PaperLeashable & CraftEntity#setLeashHolder dual-entity TickThread.ensureTickThread assertions",
+        ),
+    )
+
     // --- assembled views -----------------------------------------------------------------
 
     val manifestRules: List<ManifestRule> = listOf(foliaSupportFlag)
@@ -1101,6 +1205,10 @@ object RuleCatalog {
         unsynchronizedInstanceCollection,
         capturedEntityInLocationRegion,
         capturedChunkAcrossTicks,
+        dataComponentHolderOffRegion,
+        sharedInventoryConcurrentMutation,
+        parallelRegionScoreboardRace,
+        crossRegionLeashableHazard,
     )
 
     val callRules: List<CallRule> = listOf(
@@ -1130,6 +1238,7 @@ object RuleCatalog {
         scoreboardComponentOffRegion,
         advancementProgressOffRegion,
         lootTableOffRegion,
+        inventoryViewOffRegionMutation,
     )
 
     val all: List<Rule> =

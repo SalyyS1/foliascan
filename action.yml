@@ -31,9 +31,9 @@ inputs:
     required: false
     default: ""
   version:
-    description: "FoliaScan release version to download (for example: 1.0.0)."
+    description: "FoliaScan release version to download (for example: 1.1.0)."
     required: false
-    default: "1.0.0"
+    default: "1.1.0"
 
 outputs:
   exit-code:

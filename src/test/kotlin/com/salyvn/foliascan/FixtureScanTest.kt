@@ -772,4 +772,91 @@ class FixtureScanTest {
         assertTrue(fs107.single().evidence.contains("Chunk.getEntities() on captured Chunk reference"))
         assertTrue(fs107.single().context?.contains("RegionScheduler.runDelayed") == true)
     }
+
+    @Test
+    fun `v110 fixture flags FS111 off-region DataComponentHolder and live slot CraftItemStack while sparing new and cloned ItemStacks`() {
+        val report = scanner.scan(FixtureJars.v110())
+        val fs111 = report.findings.filter { it.ruleId == "FS111" }
+        assertEquals(2, fs111.size) {
+            "expected 2 FS111 findings (DataComponentHolder.setData and live getItemInMainHand -> ItemStack.setData), got: " +
+                fs111.map { "${it.location.method}: ${it.evidence}" }
+        }
+        assertTrue(fs111.any { it.evidence.contains("DataComponentHolder.setData()") })
+        assertTrue(fs111.any { it.evidence.contains("live PlayerInventory.getItemInMainHand() mutated via ItemStack.setData()") })
+        assertFalse(
+            report.findings.any {
+                it.location.method?.contains("safeAsyncDetachedAndClonedItemStack") == true ||
+                    it.context?.contains("safeAsyncDetachedAndClonedItemStack") == true
+            },
+        ) {
+            "detached new ItemStack or clone() component mutation was falsely flagged: ${report.findings}"
+        }
+    }
+
+    @Test
+    fun `v110 fixture flags FS112 shared Inventory and Merchant fields across parallel regional schedulers while sparing synchronized`() {
+        val report = scanner.scan(FixtureJars.v110())
+        val fs112 = report.findings.filter { it.ruleId == "FS112" }
+        assertEquals(2, fs112.size) {
+            "expected 2 FS112 findings (depositUnsync Inventory.setItem and updateTradesUnsync Merchant.setRecipes), got: " +
+                fs112.map { "${it.location.method}: ${it.evidence}" }
+        }
+        assertTrue(fs112.any { it.evidence.contains("SharedClanVault.vaultInventory (Inventory) mutated via setItem()") && it.callChain.size >= 3 })
+        assertTrue(fs112.any { it.evidence.contains("SharedClanVault.clanMerchant (Merchant) mutated via setRecipes()") && it.callChain.size >= 3 })
+        assertFalse(report.findings.any { it.location.method == "depositSynchronized" })
+    }
+
+    @Test
+    fun `v110 fixture flags FS113 off-region InventoryView mutations while sparing viewing player EntityScheduler`() {
+        val report = scanner.scan(FixtureJars.v110())
+        val fs113 = report.findings.filter { it.ruleId == "FS113" }
+        assertEquals(2, fs113.size) {
+            "expected 2 FS113 findings (setCursor and setTitle), got: ${fs113.map { it.evidence }}"
+        }
+        assertTrue(fs113.any { it.evidence.contains("InventoryView.setCursor()") })
+        assertTrue(fs113.any { it.evidence.contains("InventoryView.setTitle()") })
+        assertFalse(
+            report.findings.any {
+                it.location.method?.contains("safePlayerInventoryViewMutation") == true ||
+                    it.context?.contains("safePlayerInventoryViewMutation") == true
+            },
+        )
+    }
+
+    @Test
+    fun `v110 fixture flags FS114 Scoreboard Team Score and resetScores across parallel regional schedulers while sparing GlobalRegionScheduler`() {
+        val report = scanner.scan(FixtureJars.v110())
+        val fs114 = report.findings.filter { it.ruleId == "FS114" }
+        assertEquals(3, fs114.size) {
+            "expected 3 FS114 findings (Team.addEntry, Score.setScore, Scoreboard.resetScores), got: " +
+                fs114.map { "${it.location.method}: ${it.evidence}" }
+        }
+        assertTrue(fs114.any { it.evidence.contains("Team.addEntry()") && it.context?.contains("RegionScheduler.execute") == true })
+        assertTrue(fs114.any { it.evidence.contains("Score.setScore()") && it.context?.contains("EntityScheduler.run") == true })
+        assertTrue(fs114.any { it.evidence.contains("Scoreboard.resetScores()") && it.context?.contains("EntityScheduler.run") == true })
+        assertFalse(
+            report.findings.any {
+                it.location.method?.contains("safeGlobalScoreboardMutation") == true ||
+                    it.context?.contains("safeGlobalScoreboardMutation") == true
+            },
+        )
+    }
+
+    @Test
+    fun `v110 fixture flags FS115 unguarded and async Leashable operations while sparing null detach and isOwnedByCurrentRegion`() {
+        val report = scanner.scan(FixtureJars.v110())
+        val fs115 = report.findings.filter { it.ruleId == "FS115" }
+        assertEquals(2, fs115.size) {
+            "expected 2 FS115 findings (unguarded setLeashHolder(player) despite earlier null local, and async getLeashHolder), got: " +
+                fs115.map { "${it.location.method}: ${it.evidence}" }
+        }
+        assertTrue(fs115.any { it.evidence.contains("Leashable.setLeashHolder() without isOwnedByCurrentRegion guard") })
+        assertTrue(fs115.any { it.evidence.contains("Leashable.getLeashHolder()") && it.context?.contains("AsyncScheduler") == true })
+        assertFalse(
+            report.findings.any {
+                it.location.method?.contains("safeLeashableOperations") == true ||
+                    it.context?.contains("safeLeashableOperations") == true
+            },
+        )
+    }
 }

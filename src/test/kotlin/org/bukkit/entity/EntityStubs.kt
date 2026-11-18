@@ -16,11 +16,13 @@ interface Entity {
     fun eject(): Boolean
     fun leaveVehicle(): Boolean
     fun getPersistentDataContainer(): PersistentDataContainer
+    fun setData(type: Any, value: Any)
 }
 
 interface LivingEntity : Entity {
     fun getHealth(): Double
     fun setHealth(health: Double)
+    fun setLeashHolder(holder: Entity?): Boolean
 }
 
 interface Player : LivingEntity {
