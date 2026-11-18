@@ -43,7 +43,8 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
             val prefixes = includePrefixes(descriptor, classNames, notes)
             val classes = readClasses(jar, prefixes, notes)
             val jarClasses = JarClasses(classes)
-            val offRegion = OffRegionContextResolver.resolve(jarClasses)
+            val guards = FoliaGuardResolver.resolve(jarClasses)
+            val offRegion = OffRegionContextResolver.resolve(jarClasses, guards)
 
             // Patcher markers sit outside the plugin's own package, so they are looked for in
             // the raw entry list rather than in the parsed classes.
@@ -76,7 +77,7 @@ class JarScanner(private val options: ScanOptions = ScanOptions()) {
                 disabledRules = options.disabledRules,
                 reportable = reportable,
                 patched = patched,
-                guards = FoliaGuardResolver.resolve(jarClasses),
+                guards = guards,
             )
             val findings = collector.collect()
 

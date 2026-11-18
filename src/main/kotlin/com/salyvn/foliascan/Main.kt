@@ -12,7 +12,9 @@ import com.github.ajalt.clikt.parameters.options.multiple
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.versionOption
 import com.github.ajalt.clikt.parameters.types.choice
+import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.path
+import com.salyvn.foliascan.bench.BenchmarkSuite
 import com.salyvn.foliascan.model.ScanReport
 import com.salyvn.foliascan.model.Severity
 import com.salyvn.foliascan.report.Baseline
@@ -88,9 +90,36 @@ class FoliaScanCommand : CliktCommand(name = "foliascan") {
 
     private val listRules by option("--rules", help = "Print the rule catalog and exit").flag()
 
+    private val benchmark by option(
+        "--benchmark",
+        help = "Run the synthetic multi-class bytecode benchmark suite and exit",
+    ).flag()
+
+    private val benchmarkRuns by option(
+        "--benchmark-runs",
+        help = "Timed passes for --benchmark (default: 20)",
+    ).int().default(20)
+
     override fun run() {
         if (listRules) {
             echo(renderRules())
+            return
+        }
+        if (benchmark) {
+            val metrics = BenchmarkSuite.run(benchmarkRuns)
+            val rendered = if (format == "json") {
+                BenchmarkSuite.renderJson(metrics)
+            } else {
+                BenchmarkSuite.renderConsole(metrics)
+            }
+            output?.let { target ->
+                target.parent?.let { Files.createDirectories(it) }
+                Files.writeString(target, rendered)
+                echo("Wrote benchmark report to $target")
+            } ?: echo(rendered)
+            if (!metrics.recallComplete) {
+                throw ProgramResult(1)
+            }
             return
         }
         val jars = expandTargets()

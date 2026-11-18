@@ -1,5 +1,6 @@
 package com.salyvn.foliascan
 
+import com.salyvn.foliascan.bench.BenchmarkSuite
 import com.salyvn.foliascan.model.Severity
 import com.salyvn.foliascan.scan.JarScanner
 import com.salyvn.foliascan.scan.ScanOptions
@@ -619,5 +620,90 @@ class FixtureScanTest {
         assertTrue(waterloggedFinding!!.evidence.contains("BlockData.setWaterlogged()"))
         assertTrue(waterloggedFinding.context?.contains("AsyncScheduler") == true)
         assertFalse(report.findings.any { it.ruleId == "FS100" && it.location.method?.contains("safeBlockDataOnRegion") == true })
+    }
+
+    @Test
+    fun `v090 fixture propagates taint across INVOKEINTERFACE into concrete implementation for FS102 and FS103`() {
+        val report = scanner.scan(FixtureJars.v090())
+        val fs103 = report.findings.filter { it.ruleId == "FS103" }
+        assertEquals(1, fs103.size) { "expected 1 FS103 finding, got: $fs103" }
+        val invFinding = fs103.single()
+        assertTrue(invFinding.location.className.endsWith("DatabaseRewardGateway"))
+        assertEquals("grantRewardAndScan", invFinding.location.method)
+        assertTrue(invFinding.evidence.contains("PlayerInventory.setItem()"))
+        assertTrue(invFinding.callChain.size >= 3) {
+            "expected >=3-hop taint chain across INVOKEINTERFACE, got: ${invFinding.callChain}"
+        }
+
+        val fs102 = report.findings.filter { it.ruleId == "FS102" }
+        assertEquals(1, fs102.size) { "expected 1 FS102 finding, got: $fs102" }
+        val selFinding = fs102.single()
+        assertTrue(selFinding.location.className.endsWith("DatabaseRewardGateway"))
+        assertTrue(selFinding.evidence.contains("Bukkit.selectEntities()"))
+        assertTrue(selFinding.callChain.size >= 3)
+    }
+
+    @Test
+    fun `v090 fixture detects Dispatchers_IO coroutine taint and FS101 unconfined suspension while sparing regionDispatcher`() {
+        val report = scanner.scan(FixtureJars.v090())
+        val fs101 = report.findings.filter { it.ruleId == "FS101" }
+        assertEquals(2, fs101.size) {
+            "expected 2 FS101 findings (delay() before loadChunk and off-region Continuation.resumeWith), got: " +
+                fs101.map { "${it.location.method}: ${it.evidence}" }
+        }
+        assertTrue(fs101.any { it.evidence.contains("DelayKt.delay() resumes before World.loadChunk()") })
+        assertTrue(fs101.any { it.evidence.contains("Continuation.resumeWith() invoked off-region") })
+
+        val fs060 = report.findings.filter { it.ruleId == "FS060" }
+        assertEquals(1, fs060.size) { "expected FS060 on World.loadChunk inside Dispatchers.IO suspend chain, got: $fs060" }
+        assertEquals("suspendRefreshChunk", fs060.single().location.method)
+        assertTrue(fs060.single().context?.contains("Dispatchers.IO") == true)
+
+        assertFalse(
+            report.findings.any {
+                it.location.method?.contains("safeCoroutineHoppingToRegion") == true ||
+                    it.context?.contains("safeCoroutineHoppingToRegion") == true
+            },
+        ) {
+            "safe coroutine switching to regionDispatcher + EntityScheduler was falsely flagged: ${report.findings}"
+        }
+    }
+
+    @Test
+    fun `v090 fixture flags FS104 runtime Bukkit reloadData as CRITICAL`() {
+        val report = scanner.scan(FixtureJars.v090())
+        val fs104 = report.findings.filter { it.ruleId == "FS104" }
+        assertEquals(1, fs104.size) { "expected 1 FS104 finding, got: $fs104" }
+        assertEquals(Severity.CRITICAL, fs104.single().severity)
+        assertEquals("unsafeRuntimeDatapackReload", fs104.single().location.method)
+        assertTrue(fs104.single().evidence.contains("Bukkit.reloadData()"))
+    }
+
+    @Test
+    fun `v090 fixture flags FS105 unsynchronized instance HashMap mutated across RegionScheduler while sparing ConcurrentHashMap and synchronized`() {
+        val report = scanner.scan(FixtureJars.v090())
+        val fs105 = report.findings.filter { it.ruleId == "FS105" }
+        assertEquals(1, fs105.size) {
+            "expected 1 FS105 finding on UnsafeInstanceSessionTracker.visits, got: " +
+                fs105.map { "${it.location.method}: ${it.evidence}" }
+        }
+        val hit = fs105.single()
+        assertTrue(hit.location.className.endsWith("UnsafeInstanceSessionTracker"))
+        assertEquals("recordVisit", hit.location.method)
+        assertTrue(hit.evidence.contains("UnsafeInstanceSessionTracker.visits (HashMap) mutated via put()"))
+        assertTrue(hit.context?.contains("RegionScheduler.execute") == true)
+        assertTrue(hit.callChain.size >= 3)
+    }
+
+    @Test
+    fun `synthetic benchmark suite achieves complete recall and zero false positives`() {
+        val metrics = BenchmarkSuite.run(iterations = 3)
+        assertTrue(metrics.recallComplete) {
+            "benchmark missed expected rules or triggered false positives: $metrics"
+        }
+        assertEquals(0, metrics.falsePositivesOnSafeControl)
+        assertTrue(metrics.classesPerSecond > 0.0)
+        val json = BenchmarkSuite.renderJson(metrics)
+        assertTrue(json.contains("\"recallComplete\": true"))
     }
 }

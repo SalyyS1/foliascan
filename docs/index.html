@@ -524,7 +524,7 @@
     <div class="topbar-inner">
       <div class="brand">
         <span>FoliaScan</span>
-        <span class="brand-tag">v0.8.0 Browser Bytecode Scanner</span>
+        <span class="brand-tag">v0.9.0 Browser Bytecode Scanner</span>
       </div>
       <nav class="nav-links" aria-label="Primary links">
         <a href="https://github.com/SalyyS1/foliascan">GitHub Repository</a>
@@ -961,6 +961,46 @@
         why: "In Folia, Block#getBlockData returns a snapshot of the block palette entry. If that snapshot is captured and then mutated (setOpen, setFacing, setWaterlogged, etc.) from an async scheduler task before Block#setBlockData is called back on the region thread, the intermediate state is published without happens-before to the region.",
         fix: "Perform the entire Block#getBlockData -> mutate -> Block#setBlockData sequence inside a single Bukkit.getRegionScheduler().execute(plugin, location, () -> { ... }) callback.",
         provenance: "0001-Region-Threading-Base.patch (CraftBlock#getBlockData / setBlockData: region-guarded via TickThread.ensureTickThread)"
+      },
+      FS101: {
+        id: "FS101",
+        severity: "WARNING",
+        title: "Unconfined Kotlin coroutine suspension or Continuation.resumeWith resumes off-region",
+        why: "Continuation#resumeWith invoked from an async callback or DelayKt#delay / Dispatchers.Unconfined suspension without a Folia region-bound ContinuationInterceptor resumes execution on DefaultExecutor or worker threads, throwing IllegalStateException on subsequent World, Block, Inventory, or Entity calls.",
+        fix: "Bind the CoroutineScope to a Folia region or entity ContinuationInterceptor or re-enter entity.getScheduler().run(...) / Bukkit.getRegionScheduler().execute(...) after suspension.",
+        provenance: "0002-Region-scheduler-API.patch (Kotlin ContinuationImpl#resumeWith & DefaultExecutor vs Folia TickThread ownership)"
+      },
+      FS102: {
+        id: "FS102",
+        severity: "WARNING",
+        title: "Bukkit.selectEntities target selector evaluated from off-region context",
+        why: "CraftServer#selectEntities evaluates vanilla target selectors (@e, @a, @p, @r, @s) through EntitySelector#findEntities, reading world entity lookups guarded by TickThread.ensureTickThread.",
+        fix: "Evaluate entity selectors on the region owning the CommandSender or target Location via Bukkit.getRegionScheduler().execute(...) or EntityScheduler.",
+        provenance: "0001-Region-Threading-Base.patch (CraftServer#selectEntities -> EntitySelector#findEntities)"
+      },
+      FS103: {
+        id: "FS103",
+        severity: "WARNING",
+        title: "Inventory or EntityEquipment slot mutated from an off-region or async context",
+        why: "Bukkit Inventory, PlayerInventory, and EntityEquipment instances wrap live NMS NonNullList<ItemStack> arrays ticked per-region. Calling setItem, addItem, removeItem, clear, or equipment setters off-region races with regional container ticking.",
+        fix: "Mutate player inventories inside player.getScheduler().run(plugin, ...) and block container inventories inside Bukkit.getRegionScheduler().execute(plugin, blockLoc, ...).",
+        provenance: "0001-Region-Threading-Base.patch (CraftInventory, CraftInventoryPlayer, and CraftEntityEquipment live NMS slot mutations)"
+      },
+      FS104: {
+        id: "FS104",
+        severity: "CRITICAL",
+        title: "Runtime Server.reload / reloadData throws UnsupportedOperationException on Folia",
+        why: "Folia disables CraftServer#reload and CraftServer#reloadData unconditionally because swapping plugins or datapack registries while region threads tick concurrently cannot be made thread-safe.",
+        fix: "Replace server-wide reload/reloadData calls with plugin-internal configuration reloading and restart the server for datapack changes.",
+        provenance: "0001-Region-Threading-Base.patch (CraftServer#reload and CraftServer#reloadData throw UnsupportedOperationException)"
+      },
+      FS105: {
+        id: "FS105",
+        severity: "WARNING",
+        title: "Unsynchronized instance collection field mutated across concurrent Folia tasks",
+        why: "Instance HashMap, LinkedHashMap, ArrayList, or HashSet fields on shared Plugin, Listener, or Service classes are accessed concurrently across RegionScheduler, EntityScheduler, and AsyncScheduler threads under Folia.",
+        fix: "Replace instance HashMap / mutableMapOf fields with ConcurrentHashMap and ArrayList / mutableListOf with CopyOnWriteArrayList, or guard mutations with explicit synchronization.",
+        provenance: "0002-Region-scheduler-API.patch (Concurrent multi-region invocation of shared Plugin, Listener, and Service instances)"
       }
     };
 
@@ -1728,6 +1768,37 @@
       let asyncSignalClasses = 0;
       let contextualRegionCallSites = 0;
 
+      // Pre-compute inter-procedural CHA INVOKEINTERFACE / coroutine async taint across classMap
+      const taintedOwners = new Set();
+      for (const m of classMap.values()) {
+        const directAsync =
+          m.declaredMethods.some((dm) => ASYNC_EVENT_DESCRIPTORS.some((ev) => dm.descriptor === "(L" + ev + ";)V")) ||
+          m.superName === "kotlin/coroutines/jvm/internal/SuspendLambda" ||
+          m.methodRefs.some(
+            (r) =>
+              ASYNC_SUBMITTERS.has(r.name) ||
+              (r.owner === "java/lang/Thread" && r.name === "<init>") ||
+              r.owner.endsWith("/AsyncScheduler") ||
+              r.owner.endsWith("/GlobalRegionScheduler") ||
+              (r.owner === "kotlinx/coroutines/Dispatchers" &&
+                (r.name === "getIO" || r.name === "getDefault" || r.name === "getUnconfined"))
+          );
+        if (directAsync) {
+          taintedOwners.add(m.internalName);
+          for (const r of m.methodRefs) {
+            if (classMap.has(r.owner)) taintedOwners.add(r.owner);
+          }
+        }
+      }
+      for (const m of classMap.values()) {
+        if (
+          (m.superName && taintedOwners.has(m.superName)) ||
+          (Array.isArray(m.interfaces) && m.interfaces.some((iface) => taintedOwners.has(iface)))
+        ) {
+          taintedOwners.add(m.internalName);
+        }
+      }
+
       for (const model of classMap.values()) {
         const guardReason = detectClassFoliaGuard(model);
         const seenInClass = new Set();
@@ -1751,9 +1822,11 @@
           emitOnce(RULES.FS012, "extends BukkitRunnable", true);
         }
 
-        let classHasAsyncSignal = model.declaredMethods.some((m) =>
-          ASYNC_EVENT_DESCRIPTORS.some((ev) => m.descriptor === "(L" + ev + ";)V")
-        );
+        let classHasAsyncSignal =
+          taintedOwners.has(model.internalName) ||
+          model.declaredMethods.some((m) =>
+            ASYNC_EVENT_DESCRIPTORS.some((ev) => m.descriptor === "(L" + ev + ";)V")
+          );
         let classContextualCalls = 0;
 
         for (const ref of model.methodRefs) {
@@ -1983,6 +2056,47 @@
              ref.name === "setType" || ref.name === "setAxis" || ref.name === "setInstrument" || ref.name === "setNote")
           ) {
             emitOnce(RULES.FS100, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS101: Unconfined Kotlin coroutine suspension or off-region Continuation.resumeWith
+          if (
+            (classHasAsyncSignal &&
+              (ref.owner === "kotlin/coroutines/Continuation" || ref.owner === "kotlinx/coroutines/CancellableContinuation") &&
+              (ref.name === "resumeWith" || ref.name === "resume")) ||
+            (ref.owner === "kotlinx/coroutines/DelayKt" && ref.name.startsWith("delay") && classContextualCalls > 0)
+          ) {
+            emitOnce(RULES.FS101, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS102: Bukkit.selectEntities / Server.selectEntities off-region
+          if (
+            classHasAsyncSignal &&
+            (ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") &&
+            ref.name === "selectEntities"
+          ) {
+            emitOnce(RULES.FS102, simpleOwner + ".selectEntities()", false);
+          }
+
+          // FS103: Inventory / PlayerInventory / EntityEquipment slot mutation off-region
+          if (
+            classHasAsyncSignal &&
+            ref.owner.startsWith("org/bukkit/inventory/") &&
+            ref.owner !== "org/bukkit/inventory/BlockInventoryHolder" &&
+            (ref.name === "setItem" || ref.name === "addItem" || ref.name === "removeItem" ||
+             ref.name === "clear" || ref.name === "setContents" || ref.name === "setStorageContents" ||
+             ref.name === "setArmorContents" || ref.name === "setHelmet" || ref.name === "setChestplate" ||
+             ref.name === "setLeggings" || ref.name === "setBoots" || ref.name === "setItemInMainHand" ||
+             ref.name === "setItemInOffHand")
+          ) {
+            emitOnce(RULES.FS103, simpleOwner + "." + ref.name + "()", false);
+          }
+
+          // FS104: Unconditional runtime Server.reload / reloadData
+          if (
+            (ref.owner === "org/bukkit/Bukkit" || ref.owner === "org/bukkit/Server") &&
+            (ref.name === "reload" || ref.name === "reloadData")
+          ) {
+            emitOnce(RULES.FS104, simpleOwner + "." + ref.name + "()", true);
           }
         }
 

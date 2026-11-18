@@ -56,7 +56,12 @@ interface Server {
     fun createInventory(owner: Any?, size: Int, title: String): Any
     fun broadcastMessage(message: String): Int
     fun broadcast(message: String, permission: String): Int
+    fun selectEntities(sender: Any, selector: String): List<EntityStubMarker>
+    fun reload()
+    fun reloadData()
 }
+
+interface EntityStubMarker
 
 @Suppress("unused")
 object Bukkit {
@@ -113,4 +118,13 @@ object Bukkit {
 
     @JvmStatic
     fun getServicesManager(): ServicesManager = throw UnsupportedOperationException()
+
+    @JvmStatic
+    fun selectEntities(sender: Any, selector: String): List<Any> = emptyList()
+
+    @JvmStatic
+    fun reload() = Unit
+
+    @JvmStatic
+    fun reloadData() = Unit
 }

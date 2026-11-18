@@ -203,9 +203,10 @@ object SarifReporter {
 
     private fun flowStepRole(finding: Finding, idx: Int, lastIdx: Int): String = when {
         idx == 0 -> when (finding.ruleId) {
-            "FS081" -> "Concurrent scheduler entry"
+            "FS081", "FS105" -> "Concurrent scheduler entry"
             "FS088" -> "Async chunk-generation taint entry"
             "FS090" -> "Block-entity snapshot capture and schedule"
+            "FS101" -> "Coroutine suspension or async continuation entry"
             else -> "Off-region taint entry"
         }
         idx == lastIdx -> when (finding.ruleId) {
@@ -213,9 +214,11 @@ object SarifReporter {
             "FS087" -> "Blocking region-future sink (${finding.evidence})"
             "FS088" -> "Live-world escape sink (${finding.evidence})"
             "FS090" -> "Delayed or cross-region block-entity sink (${finding.evidence})"
+            "FS101" -> "Unconfined continuation resumption sink (${finding.evidence})"
+            "FS105" -> "Unsynchronized instance collection mutation sink (${finding.evidence})"
             else -> "Region-guarded sink (${finding.evidence})"
         }
-        else -> "In-jar call hop $idx"
+        else -> "In-jar call or interface dispatch hop $idx"
     }
 
     private fun level(severity: Severity?): String = when (severity) {

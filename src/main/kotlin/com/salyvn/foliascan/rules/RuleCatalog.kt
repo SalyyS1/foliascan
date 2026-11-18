@@ -868,6 +868,120 @@ object RuleCatalog {
         contextual = true,
     )
 
+    // FS101-FS105: Folia v0.9.0 rules -------------------------------------------------------
+
+    val unconfinedCoroutineSuspension = ConcurrencyRule(
+        id = "FS101",
+        severity = Severity.WARNING,
+        title = "Unconfined Kotlin coroutine suspension or Continuation.resumeWith resumes off-region",
+        why = "In Kotlin coroutines, Continuation#resumeWith invoked from an async callback or " +
+            "DelayKt#delay / Dispatchers.Unconfined suspension without a Folia region-bound " +
+            "ContinuationInterceptor resumes execution on kotlinx.coroutines.DefaultExecutor, " +
+            "CommonPool, or Netty worker threads. Subsequent World, Block, TileState, Inventory, " +
+            "or Entity calls after the suspension point throw IllegalStateException under " +
+            "TickThread.ensureTickThread even if the coroutine originally started on a region thread.",
+        fix = "Bind the CoroutineScope to a Folia region or entity ContinuationInterceptor " +
+            "that dispatches resumeWith via RegionScheduler or EntityScheduler, or explicitly " +
+            "re-enter entity.getScheduler().run(...) / Bukkit.getRegionScheduler().execute(...) " +
+            "after suspension before touching world or entity state.",
+        provenance = Provenance(
+            PATCH_SCHED_API,
+            "Kotlin ContinuationImpl#resumeWith & DefaultExecutor vs Folia TickThread ownership",
+        ),
+    )
+
+    val selectEntitiesOffRegion = CallRule(
+        id = "FS102",
+        severity = Severity.WARNING,
+        title = "Bukkit.selectEntities target selector evaluated from off-region context",
+        why = "CraftServer#selectEntities evaluates vanilla target selectors (@e, @a, @p, @r, @s) " +
+            "through EntitySelector#findEntities, reading world entity lookups and sender coordinates " +
+            "guarded by TickThread.ensureTickThread. Invoking selectEntities from an async task, " +
+            "coroutine worker, or GlobalRegionScheduler throws IllegalStateException off-region.",
+        fix = "Evaluate entity selectors on the region owning the CommandSender or target Location " +
+            "via Bukkit.getRegionScheduler().execute(plugin, location, task) or sender's EntityScheduler.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftServer#selectEntities -> net.minecraft.commands.arguments.selector.EntitySelector#findEntities",
+        ),
+        owners = setOf("org/bukkit/Bukkit", "org/bukkit/Server"),
+        methods = setOf("selectEntities"),
+        contextual = true,
+    )
+
+    val inventoryOffRegionMutation = CallRule(
+        id = "FS103",
+        severity = Severity.WARNING,
+        title = "Inventory or EntityEquipment slot mutated from an off-region or async context",
+        why = "Bukkit Inventory, PlayerInventory, and EntityEquipment instances wrap live NMS " +
+            "NonNullList<ItemStack> backing arrays ticked per-region alongside hoppers, crafters, " +
+            "and player container menus. Calling setItem, addItem, removeItem, clear, setContents, " +
+            "or equipment setters off-region races with regional container ticking and packet " +
+            "broadcasts, causing item duplication, lost stacks, or IndexOutOfBoundsException.",
+        fix = "Mutate player inventories and equipment inside player.getScheduler().run(plugin, ...), " +
+            "and mutate block container inventories inside Bukkit.getRegionScheduler().execute(plugin, blockLoc, ...).",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftInventory, CraftInventoryPlayer, and CraftEntityEquipment live NMS slot mutations",
+        ),
+        owners = setOf(
+            "org/bukkit/inventory/Inventory",
+            "org/bukkit/inventory/PlayerInventory",
+            "org/bukkit/inventory/EntityEquipment",
+            "org/bukkit/inventory/CraftingInventory",
+            "org/bukkit/inventory/MerchantInventory",
+            "org/bukkit/inventory/AnvilInventory",
+            "org/bukkit/inventory/BeaconInventory",
+            "org/bukkit/inventory/BrewerInventory",
+            "org/bukkit/inventory/EnchantingInventory",
+            "org/bukkit/inventory/FurnaceInventory",
+            "org/bukkit/inventory/SmithingInventory",
+        ),
+        methods = setOf(
+            "setItem", "addItem", "removeItem", "removeItemAnySlot", "remove", "clear",
+            "setContents", "setStorageContents", "setArmorContents", "setExtraContents",
+            "setHelmet", "setChestplate", "setLeggings", "setBoots",
+            "setItemInMainHand", "setItemInOffHand", "setItemInHand", "setMaxStackSize",
+        ),
+        contextual = true,
+    )
+
+    val runtimeServerReload = CallRule(
+        id = "FS104",
+        severity = Severity.CRITICAL,
+        title = "Runtime Server.reload / reloadData throws UnsupportedOperationException on Folia",
+        why = "Folia disables CraftServer#reload and CraftServer#reloadData unconditionally " +
+            "because tearing down plugins or swapping datapack registries while independent " +
+            "region threads are actively ticking worlds and entities cannot be made thread-safe.",
+        fix = "Replace server-wide reload/reloadData calls with plugin-internal configuration " +
+            "reloading using atomic immutable snapshots, and restart the server for datapack changes.",
+        provenance = Provenance(
+            PATCH_SERVER,
+            "CraftServer#reload and CraftServer#reloadData throw UnsupportedOperationException",
+        ),
+        owners = setOf("org/bukkit/Bukkit", "org/bukkit/Server"),
+        methods = setOf("reload", "reloadData"),
+        contextual = false,
+    )
+
+    val unsynchronizedInstanceCollection = ConcurrencyRule(
+        id = "FS105",
+        severity = Severity.WARNING,
+        title = "Unsynchronized instance collection field mutated across concurrent Folia tasks",
+        why = "On plain Paper, instance HashMap, LinkedHashMap, ArrayList, or HashSet fields on " +
+            "Plugin, Listener, or Service singletons were mutated exclusively on the single main " +
+            "thread. On Folia, RegionScheduler, EntityScheduler, AsyncScheduler, packet listeners, " +
+            "and coroutines invoke methods on the same service/listener instance concurrently across " +
+            "worker threads, risking ConcurrentModificationException and bucket corruption.",
+        fix = "Replace instance HashMap / mutableMapOf fields with ConcurrentHashMap, ArrayList / " +
+            "mutableListOf with CopyOnWriteArrayList, and HashSet / mutableSetOf with " +
+            "ConcurrentHashMap.newKeySet(), or guard mutations with explicit synchronization.",
+        provenance = Provenance(
+            PATCH_SCHED_API,
+            "Concurrent multi-region invocation of shared Plugin, Listener, and Service instances",
+        ),
+    )
+
     // --- assembled views -----------------------------------------------------------------
 
     val manifestRules: List<ManifestRule> = listOf(foliaSupportFlag)
@@ -885,6 +999,8 @@ object RuleCatalog {
         blockingAsyncFuture,
         asyncChunkGeneratorWorldEscape,
         capturedBlockEntityAcrossTicks,
+        unconfinedCoroutineSuspension,
+        unsynchronizedInstanceCollection,
     )
 
     val callRules: List<CallRule> = listOf(
@@ -908,6 +1024,9 @@ object RuleCatalog {
         servicesManagerAsyncMutation,
         pluginManagerEventRegistrationAsync,
         blockDataAsyncSetterRace,
+        selectEntitiesOffRegion,
+        inventoryOffRegionMutation,
+        runtimeServerReload,
     )
 
     val all: List<Rule> =

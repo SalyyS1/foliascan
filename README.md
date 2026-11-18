@@ -59,14 +59,14 @@ Download `foliascan-<version>.jar` from
 [Releases](https://github.com/SalyyS1/foliascan/releases) and run it:
 
 ```bash
-java -jar foliascan-0.6.0.jar MyPlugin.jar
+java -jar foliascan-0.9.0.jar MyPlugin.jar
 ```
 
 Or build from source:
 
 ```bash
 ./gradlew build          # runs the test suite too
-java -jar build/libs/foliascan-0.6.0.jar MyPlugin.jar
+java -jar build/libs/foliascan-0.9.0.jar MyPlugin.jar
 ```
 
 ## Usage
@@ -89,6 +89,8 @@ foliascan [OPTIONS] TARGET...
   --no-color                      plain output
   -v, --verbose                   list every call site instead of the first 8
   --rules                         print the rule catalog with sources, then exit
+  --benchmark                     run the synthetic multi-class bytecode benchmark suite and exit
+  --benchmark-runs INT            timed passes for --benchmark (default: 20)
 ```
 
 Exit codes: `0` clean at the chosen threshold, `1` findings at or above it, `2` bad usage.
@@ -191,6 +193,21 @@ Run `foliascan --rules` for the full text of each one, including the Folia sourc
 | FS088 | warning | live `World` cast or lookup inside Moonrise parallel async `ChunkGenerator` or `BlockPopulator` worker callbacks |
 | FS089 | warning | `TileState`, `Container`, or Paper 26.3 block-entity (`Chest`, `Sign`, `TrialSpawner`, `Vault`, `Crafter`, ...) accessed off-region |
 | FS090 | warning | pre-fetched `BlockState` or `TileState` snapshot captured across delayed `RegionScheduler` ticks or `EntityScheduler` callbacks |
+| FS091 | warning | `PersistentDataContainer` mutation (`set`, `remove`, `readFromBytes`, `copyTo`) from off-region or async context |
+| FS092 | warning | `Structure#place` multi-block template paste across potentially unbounded regional chunk boundaries |
+| FS093 | warning | `Bukkit.createInventory` with world-bound `TileState` or `Entity` holder off-region |
+| FS094 | warning | `BossBar` player list mutation (`addPlayer`, `removePlayer`, `removeAll`) off global region |
+| FS095 | warning | `WorldBorder` configuration mutation (`setCenter`, `setSize`, ...) from regional tick thread |
+| FS096 | warning | `MapView` renderer or world configuration mutated off global region |
+| FS097 | warning | `Bukkit.broadcastMessage` / `Server#broadcast` called from regional or async context |
+| FS098 | warning | `ServicesManager#register` / `unregister` / `unregisterAll` mutated asynchronously |
+| FS099 | warning | `PluginManager#registerEvents` / `unregisterEvents` / `unregisterAll` mutated off global tick |
+| FS100 | warning | `BlockData` state setters invoked from async context before `Block#setBlockData` |
+| FS101 | warning | unconfined Kotlin coroutine `DelayKt#delay` / `Dispatchers.Unconfined` suspension or off-region `Continuation#resumeWith` |
+| FS102 | warning | `Bukkit.selectEntities` / `Server#selectEntities` vanilla target selector evaluated off-region |
+| FS103 | warning | `Inventory`, `PlayerInventory`, or `EntityEquipment` slot mutation off-region |
+| FS104 | critical | runtime `Bukkit.reload` / `Bukkit.reloadData` (`UnsupportedOperationException` on Folia) |
+| FS105 | warning | unsynchronized instance `HashMap` / `ArrayList` / `HashSet` field mutated across concurrent Folia tasks |
 
 Severities mean specific things:
 

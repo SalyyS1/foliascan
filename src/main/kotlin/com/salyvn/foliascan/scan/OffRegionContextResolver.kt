@@ -33,6 +33,11 @@ data class OffRegionOrigin(
      * callback running on a chunk-generation worker pool thread.
      */
     val isChunkGeneration: Boolean = false,
+    /**
+     * True when the entry point or propagation crosses an off-region Kotlin coroutine builder or
+     * unconfined Continuation suspension boundary.
+     */
+    val isCoroutine: Boolean = false,
     /** Ordered method hops from [entryPoint] down to the current tainted method. */
     val hops: List<TaintHop> = emptyList(),
 )
@@ -149,8 +154,25 @@ object OffRegionContextResolver {
     )
 
     private val RUN_METHOD = MethodId("run", "()V")
+    private val INVOKE_SUSPEND_METHOD = MethodId("invokeSuspend", "(Ljava/lang/Object;)Ljava/lang/Object;")
 
-    fun resolve(jar: JarClasses): OffRegionContexts {
+    private val COROUTINE_BUILDER_OWNERS = setOf(
+        "kotlinx/coroutines/BuildersKt",
+        "kotlinx/coroutines/BuildersKt__Builders_commonKt",
+        "kotlinx/coroutines/BuildersKt__BuildersKt",
+        "kotlin/coroutines/ContinuationKt",
+    )
+    private val COROUTINE_LAUNCH_METHODS = setOf(
+        "launch", "launch\$default", "async", "async\$default", "withContext", "startCoroutine",
+    )
+    private val OFF_REGION_DISPATCHER_GETTERS = setOf(
+        "getIO", "getDefault", "getUnconfined",
+    )
+    private val FOLIA_COROUTINE_DISPATCHER_HINTS = setOf(
+        "regiondispatcher", "entitydispatcher", "minecraftdispatcher",
+    )
+
+    fun resolve(jar: JarClasses, guards: GuardIndex = GuardIndex.EMPTY): OffRegionContexts {
         val seeds = mutableMapOf<MethodKey, OffRegionOrigin>()
         val reentries = mutableSetOf<MethodKey>()
 
@@ -174,7 +196,7 @@ object OffRegionContextResolver {
                     )
                 }
                 method.instructions.forEachIndexed { index, insn ->
-                    if (isRegionReentrySubmitter(insn)) {
+                    if (isRegionReentrySubmitter(insn) || isFoliaCoroutineReentry(method, index)) {
                         reentries += tasksHandedTo(method, index, jar)
                     } else if (isGlobalRegionSubmitter(insn)) {
                         taskHandedTo(method, index, jar)?.let { target ->
@@ -191,7 +213,9 @@ object OffRegionContextResolver {
                             )
                         }
                     }
-                    val reason = submitterReason(insn)
+                    val coroutineReason = coroutineSubmitterReason(method, index)
+                    val reason = coroutineReason
+                        ?: submitterReason(insn)
                         ?: chainedAsyncStageReason(method, index)
                         ?: return@forEachIndexed
                     taskHandedTo(method, index, jar)?.let { target ->
@@ -201,6 +225,7 @@ object OffRegionContextResolver {
                                 entryPoint = here,
                                 reason = reason,
                                 depth = 0,
+                                isCoroutine = coroutineReason != null,
                                 hops = seedHops(here, insn.line ?: firstLine, model.sourceFile, target, jar),
                             ),
                         )
@@ -208,7 +233,7 @@ object OffRegionContextResolver {
                 }
             }
         }
-        return OffRegionContexts(propagate(seeds, reentries, jar))
+        return OffRegionContexts(propagate(seeds, reentries, jar, guards))
     }
 
     private fun seedHops(
@@ -345,9 +370,66 @@ object OffRegionContextResolver {
     }
 
     /**
+     * Detects Kotlin coroutine builders (`launch`, `async`, `withContext`, `startCoroutine`)
+     * dispatched onto off-region worker pools (`Dispatchers.IO`, `Dispatchers.Default`,
+     * `Dispatchers.Unconfined`, `GlobalScope`, or custom `ExecutorsKt` pools).
+     */
+    private fun coroutineSubmitterReason(method: MethodModel, callIndex: Int): String? {
+        val insn = method.instructions[callIndex]
+        if (insn.kind != InsnKind.CALL) return null
+        val isBuilder = (insn.owner in COROUTINE_BUILDER_OWNERS || insn.owner.startsWith("kotlinx/coroutines/")) &&
+            insn.name in COROUTINE_LAUNCH_METHODS
+        if (!isBuilder) return null
+        if (insn.owner == "kotlin/coroutines/ContinuationKt" && insn.name == "startCoroutine") {
+            return "started via unconfined ContinuationKt.startCoroutine"
+        }
+
+        val builderLabel = insn.name.substringBefore('$')
+        val windowStart = maxOf(0, callIndex - 16)
+        for (i in callIndex - 1 downTo windowStart) {
+            val prev = method.instructions[i]
+            if (prev.kind == InsnKind.CALL &&
+                prev.owner == "kotlinx/coroutines/Dispatchers" &&
+                prev.name in OFF_REGION_DISPATCHER_GETTERS
+            ) {
+                val disp = prev.name.removePrefix("get")
+                return "launched on Kotlin coroutine $builderLabel(Dispatchers.$disp)"
+            }
+            if (prev.kind == InsnKind.FIELD && prev.owner == "kotlinx/coroutines/GlobalScope") {
+                return "launched on Kotlin GlobalScope.$builderLabel"
+            }
+            if (prev.kind == InsnKind.CALL &&
+                prev.owner == "kotlinx/coroutines/ExecutorsKt" &&
+                (prev.name == "from" || prev.name == "asCoroutineDispatcher")
+            ) {
+                return "launched on Executor-backed Kotlin coroutine $builderLabel"
+            }
+        }
+        return null
+    }
+
+    /**
+     * True when `withContext` or `launch` explicitly switches onto a Folia region/entity
+     * coroutine dispatcher (such as MCCoroutine's `regionDispatcher` or `entityDispatcher`).
+     */
+    private fun isFoliaCoroutineReentry(method: MethodModel, callIndex: Int): Boolean {
+        val insn = method.instructions[callIndex]
+        if (insn.kind != InsnKind.CALL || insn.name !in COROUTINE_LAUNCH_METHODS) return false
+        val windowStart = maxOf(0, callIndex - 12)
+        for (i in callIndex - 1 downTo windowStart) {
+            val prev = method.instructions[i]
+            if (prev.kind == InsnKind.CALL || prev.kind == InsnKind.FIELD) {
+                val lower = prev.name.lowercase()
+                if (FOLIA_COROUTINE_DISPATCHER_HINTS.any { lower.contains(it) }) return true
+            }
+        }
+        return false
+    }
+
+    /**
      * Finds the task body passed to the submitter at [callIndex]: the closest preceding
      * lambda (unwrapping Kotlin 2.x two-stage FunctionN -> Java SAM `invokedynamic` bridges),
-     * or the closest preceding `new` of an in-jar class that has a `run()` method.
+     * or the closest preceding `new` of an in-jar class that has a `run()` or `invokeSuspend()` method.
      */
     private fun taskHandedTo(method: MethodModel, callIndex: Int, jar: JarClasses): MethodKey? =
         tasksHandedTo(method, callIndex, jar).firstOrNull()
@@ -374,20 +456,32 @@ object OffRegionContextResolver {
             }
             if (prev.kind == InsnKind.TYPE_REF && prev.name == "new") {
                 val candidate = jar.get(prev.owner)
-                val run = candidate?.methods?.firstOrNull { it.id == RUN_METHOD }
-                if (candidate != null && run != null) out += MethodKey(candidate.internalName, run.id)
+                val entry = candidate?.methods?.firstOrNull { it.id == RUN_METHOD }
+                    ?: candidate?.methods?.firstOrNull { it.id == INVOKE_SUSPEND_METHOD }
+                if (candidate != null && entry != null) out += MethodKey(candidate.internalName, entry.id)
             }
-            if (prev.kind == InsnKind.CALL && prev.name != "<init>") break
+            if (prev.kind == InsnKind.CALL && prev.name != "<init>" &&
+                prev.owner != "kotlinx/coroutines/Dispatchers" &&
+                prev.owner != "kotlinx/coroutines/ExecutorsKt" &&
+                !FOLIA_COROUTINE_DISPATCHER_HINTS.any { prev.name.lowercase().contains(it) }
+            ) {
+                break
+            }
             i -= 1
         }
         return out
     }
 
-    /** Breadth-first taint across in-jar call edges, keeping the shortest path to each method. */
+    /**
+     * Breadth-first taint across in-jar call edges (including CHA polymorphic INVOKEINTERFACE /
+     * INVOKEVIRTUAL targets and nested Kotlin SuspendLambda state machines), keeping the shortest
+     * path to each method while skipping Folia-guarded non-Folia platform branches.
+     */
     private fun propagate(
         seeds: Map<MethodKey, OffRegionOrigin>,
         reentries: Set<MethodKey>,
         jar: JarClasses,
+        guards: GuardIndex,
     ): Map<MethodKey, OffRegionOrigin> {
         val result = seeds.toMutableMap()
         val queue = ArrayDeque(seeds.keys)
@@ -397,31 +491,47 @@ object OffRegionContextResolver {
             val model = jar.get(current.owner) ?: continue
             val body = model.method(current.method) ?: continue
             for (insn in body.instructions) {
-                val next = when {
+                val targets: List<MethodKey> = when {
                     insn.kind == InsnKind.CALL && jar.contains(insn.owner) ->
-                        MethodKey(insn.owner, MethodId(insn.name, insn.desc))
+                        jar.resolveCallTargets(insn)
 
                     insn.kind == InsnKind.INDY && insn.lambdaTarget != null &&
-                        jar.contains(insn.lambdaTarget.owner) -> insn.lambdaTarget
+                        jar.contains(insn.lambdaTarget.owner) -> listOf(insn.lambdaTarget)
 
-                    else -> null
-                } ?: continue
-                if (next in reentries) continue
-                if (result.containsKey(next)) continue
-                val nextClass = jar.get(next.owner) ?: continue
-                val nextBody = nextClass.method(next.method) ?: continue
-                val updatedPrefix = if (origin.hops.isNotEmpty()) {
-                    val last = origin.hops.last()
-                    origin.hops.dropLast(1) + last.copy(line = insn.line ?: last.line)
-                } else {
-                    listOf(TaintHop(current, insn.line, model.sourceFile))
+                    insn.kind == InsnKind.TYPE_REF && insn.name == "new" && jar.contains(insn.owner) -> {
+                        val suspendImpl = jar.get(insn.owner)?.method(INVOKE_SUSPEND_METHOD)
+                        if (suspendImpl != null) {
+                            listOf(MethodKey(insn.owner, INVOKE_SUSPEND_METHOD))
+                        } else {
+                            emptyList()
+                        }
+                    }
+
+                    else -> emptyList()
                 }
-                val nextFirstLine = nextBody.instructions.firstNotNullOfOrNull { it.line }
-                result[next] = origin.copy(
-                    depth = origin.depth + 1,
-                    hops = updatedPrefix + TaintHop(next, nextFirstLine, nextClass.sourceFile),
-                )
-                queue.addLast(next)
+                for (next in targets) {
+                    if (next in reentries) continue
+                    if (result.containsKey(next)) continue
+                    if (guards.guardFor(next.owner, next.method.name) != null) continue
+                    val nextClass = jar.get(next.owner) ?: continue
+                    val nextBody = nextClass.method(next.method) ?: continue
+                    val updatedPrefix = if (origin.hops.isNotEmpty()) {
+                        val last = origin.hops.last()
+                        origin.hops.dropLast(1) + last.copy(line = insn.line ?: last.line)
+                    } else {
+                        listOf(TaintHop(current, insn.line, model.sourceFile))
+                    }
+                    val nextFirstLine = nextBody.instructions.firstNotNullOfOrNull { it.line }
+                    val crossesSuspend = origin.isCoroutine ||
+                        next.method == INVOKE_SUSPEND_METHOD ||
+                        next.method.desc.contains("Lkotlin/coroutines/Continuation;)")
+                    result[next] = origin.copy(
+                        depth = origin.depth + 1,
+                        isCoroutine = crossesSuspend,
+                        hops = updatedPrefix + TaintHop(next, nextFirstLine, nextClass.sourceFile),
+                    )
+                    queue.addLast(next)
+                }
             }
         }
         return result

@@ -40,6 +40,7 @@ class FindingCollector(
         collectManifest()
         collectPatcher()
         val (unsyncFields, unsyncGetters) = discoverUnsyncStaticCollections()
+        val (unsyncInstanceFields, unsyncInstanceGetters) = discoverUnsyncInstanceCollections()
         val parallelRegionTasks = discoverParallelRegionTasks()
         for (model in jar.classes.values) {
             val blamed = model.internalName in reportable
@@ -70,12 +71,25 @@ class FindingCollector(
                         unsyncFields = unsyncFields,
                         unsyncGetters = unsyncGetters,
                     )
+                    collectUnsyncInstanceMutations(
+                        model = model,
+                        method = method,
+                        context = context,
+                        parallelOrigin = parallelRegionTasks[methodKey],
+                        unsyncFields = unsyncInstanceFields,
+                        unsyncGetters = unsyncInstanceGetters,
+                    )
                     collectLifecycleAndTeleportRules(
                         model = model,
                         method = method,
                         context = context,
                     )
                     collectAsyncChunkGenerationRules(
+                        model = model,
+                        method = method,
+                        context = context,
+                    )
+                    collectCoroutineSuspensionHazards(
                         model = model,
                         method = method,
                         context = context,
@@ -409,28 +423,31 @@ class FindingCollector(
             val curModel = jar.get(cur.owner) ?: continue
             val body = curModel.method(cur.method) ?: continue
             for (insn in body.instructions) {
-                val next = when {
+                val targets = when {
                     insn.kind == InsnKind.CALL && jar.contains(insn.owner) ->
-                        MethodKey(insn.owner, MethodId(insn.name, insn.desc))
+                        jar.resolveCallTargets(insn)
                     insn.kind == InsnKind.INDY && insn.lambdaTarget != null &&
-                        jar.contains(insn.lambdaTarget.owner) -> insn.lambdaTarget
-                    else -> null
-                } ?: continue
-                if (out.containsKey(next)) continue
-                val nextClass = jar.get(next.owner) ?: continue
-                val nextBody = nextClass.method(next.method) ?: continue
-                val updatedPrefix = if (origin.hops.isNotEmpty()) {
-                    val last = origin.hops.last()
-                    origin.hops.dropLast(1) + last.copy(line = insn.line ?: last.line)
-                } else {
-                    listOf(TaintHop(cur, insn.line, curModel.sourceFile))
+                        jar.contains(insn.lambdaTarget.owner) -> listOf(insn.lambdaTarget)
+                    else -> emptyList()
                 }
-                val nextFirstLine = nextBody.instructions.firstNotNullOfOrNull { it.line }
-                out[next] = origin.copy(
-                    depth = origin.depth + 1,
-                    hops = updatedPrefix + TaintHop(next, nextFirstLine, nextClass.sourceFile),
-                )
-                queue.addLast(next)
+                for (next in targets) {
+                    if (out.containsKey(next)) continue
+                    if (guards.guardFor(next.owner, next.method.name) != null) continue
+                    val nextClass = jar.get(next.owner) ?: continue
+                    val nextBody = nextClass.method(next.method) ?: continue
+                    val updatedPrefix = if (origin.hops.isNotEmpty()) {
+                        val last = origin.hops.last()
+                        origin.hops.dropLast(1) + last.copy(line = insn.line ?: last.line)
+                    } else {
+                        listOf(TaintHop(cur, insn.line, curModel.sourceFile))
+                    }
+                    val nextFirstLine = nextBody.instructions.firstNotNullOfOrNull { it.line }
+                    out[next] = origin.copy(
+                        depth = origin.depth + 1,
+                        hops = updatedPrefix + TaintHop(next, nextFirstLine, nextClass.sourceFile),
+                    )
+                    queue.addLast(next)
+                }
             }
         }
         return out
@@ -538,6 +555,255 @@ class FindingCollector(
                 else -> Unit
             }
         }
+    }
+
+    private fun discoverUnsyncInstanceCollections(): Pair<
+        Map<Pair<String, String>, String>,
+        Map<Pair<String, String>, Pair<Pair<String, String>, String>>,
+        > {
+        val fields = mutableMapOf<Pair<String, String>, String>()
+        for (model in jar.classes.values) {
+            if ('$' in model.internalName) continue
+            if (jar.inheritsAny(model.internalName, EPHEMERAL_TASK_SUPERTYPES)) continue
+            val inits = model.methods.filter { it.id.name == "<init>" }
+            for (initMethod in inits) {
+                var lastAlloc: String? = null
+                for (insn in initMethod.instructions) {
+                    when (insn.kind) {
+                        InsnKind.TYPE_REF -> if (insn.name == "new") {
+                            lastAlloc = when {
+                                insn.owner in UNSYNC_COLLECTION_TYPES -> insn.owner.substringAfterLast('/')
+                                insn.owner.startsWith("java/util/concurrent/") -> null
+                                else -> lastAlloc
+                            }
+                        }
+
+                        InsnKind.CALL -> when {
+                            insn.owner in KOTLIN_COLLECTION_FACTORIES && insn.name in KOTLIN_MUTABLE_FACTORIES ->
+                                lastAlloc = insn.name
+
+                            insn.owner == "java/util/Collections" && (
+                                insn.name.startsWith("synchronized") ||
+                                    insn.name.startsWith("unmodifiable") ||
+                                    insn.name.startsWith("empty") ||
+                                    insn.name.startsWith("singleton")
+                                ) -> lastAlloc = null
+
+                            insn.owner.startsWith("java/util/concurrent/") -> lastAlloc = null
+                        }
+
+                        InsnKind.FIELD -> if (insn.opcode == Opcodes.PUTFIELD) {
+                            if (lastAlloc != null) {
+                                fields[insn.owner to insn.name] = lastAlloc
+                            }
+                            lastAlloc = null
+                        }
+
+                        else -> Unit
+                    }
+                }
+            }
+        }
+
+        val getters = mutableMapOf<Pair<String, String>, Pair<Pair<String, String>, String>>()
+        for (model in jar.classes.values) {
+            for (method in model.methods) {
+                if (!method.id.desc.startsWith("()")) continue
+                if ((method.access and Opcodes.ACC_SYNCHRONIZED) != 0) continue
+                if (method.instructions.any { it.kind == InsnKind.MONITOR }) continue
+                val instanceReads = method.instructions.filter {
+                    it.kind == InsnKind.FIELD && it.opcode == Opcodes.GETFIELD && (it.owner to it.name) in fields
+                }
+                if (instanceReads.size == 1) {
+                    val read = instanceReads.single()
+                    val fKey = read.owner to read.name
+                    fields[fKey]?.let { kind ->
+                        getters[model.internalName to method.id.name] = fKey to kind
+                    }
+                }
+            }
+        }
+        return fields to getters
+    }
+
+    private fun collectUnsyncInstanceMutations(
+        model: ClassModel,
+        method: MethodModel,
+        context: OffRegionOrigin?,
+        parallelOrigin: OffRegionOrigin?,
+        unsyncFields: Map<Pair<String, String>, String>,
+        unsyncGetters: Map<Pair<String, String>, Pair<Pair<String, String>, String>>,
+    ) {
+        val rule = RuleCatalog.unsynchronizedInstanceCollection
+        if (!enabled(rule) || unsyncFields.isEmpty()) return
+        if (method.id.name == "<init>" || method.id.name == "<clinit>") return
+        if ((method.access and Opcodes.ACC_SYNCHRONIZED) != 0) return
+        if (method.instructions.any { it.kind == InsnKind.MONITOR }) return
+
+        val effectiveOrigin = context ?: parallelOrigin ?: return
+        val locallyAllocatedOwners = method.instructions
+            .filter { it.kind == InsnKind.TYPE_REF && it.name == "new" }
+            .map { it.owner }
+            .toSet()
+
+        var pending: Pair<Pair<String, String>, String>? = null
+        for (insn in method.instructions) {
+            when (insn.kind) {
+                InsnKind.FIELD -> if (insn.opcode == Opcodes.GETFIELD) {
+                    val fKey = insn.owner to insn.name
+                    val alloc = unsyncFields[fKey]
+                    if (alloc != null && insn.owner !in locallyAllocatedOwners) {
+                        pending = fKey to alloc
+                    } else if (insn.desc.startsWith("Ljava/util/concurrent/")) {
+                        pending = null
+                    }
+                }
+
+                InsnKind.CALL -> {
+                    val getterHit = unsyncGetters[insn.owner to insn.name]
+                    if (getterHit != null && getterHit.first.first !in locallyAllocatedOwners) {
+                        pending = getterHit
+                    } else if (pending != null &&
+                        insn.owner in MUTABLE_COLLECTION_OWNERS &&
+                        insn.name in COLLECTION_MUTATORS
+                    ) {
+                        val (fieldKey, allocKind) = pending
+                        val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, effectiveOrigin)
+                        val chainSuffix = if (sinkHops.size > 1) {
+                            "; call chain: ${sinkHops.joinToString(" -> ") { it.renderShort() }}"
+                        } else {
+                            ""
+                        }
+                        out += finding(
+                            rule = rule,
+                            evidence = "${fieldKey.first.substringAfterLast('/')}.${fieldKey.second} " +
+                                "($allocKind) mutated via ${insn.name}()",
+                            why = rule.why,
+                            location = location(model, method, insn),
+                            contextual = true,
+                            context = "concurrent instance field mutation: ${effectiveOrigin.reason}$chainSuffix",
+                            callChain = chainLocations,
+                        )
+                        pending = null
+                    } else if (insn.owner.startsWith("java/util/concurrent/")) {
+                        pending = null
+                    }
+                }
+
+                else -> Unit
+            }
+        }
+    }
+
+    /**
+     * Collects FS101:
+     *  1. Explicit `Continuation#resumeWith` or `CancellableContinuation#resume*` invoked directly
+     *     from an off-region / async callback without Folia scheduler re-entry.
+     *  2. `DelayKt#delay*`, `YieldKt#yield`, or `Dispatchers.Unconfined` suspension inside a Kotlin
+     *     `suspend` method or `SuspendLambda.invokeSuspend` followed by region-guarded Bukkit state
+     *     calls without re-entering a Folia region/entity scheduler or dispatcher.
+     */
+    private fun collectCoroutineSuspensionHazards(
+        model: ClassModel,
+        method: MethodModel,
+        context: OffRegionOrigin?,
+    ) {
+        val rule = RuleCatalog.unconfinedCoroutineSuspension
+        if (!enabled(rule)) return
+        val instructions = method.instructions
+
+        // 1. Off-region manual Continuation.resumeWith / CancellableContinuation.resume
+        if (context != null) {
+            for (insn in instructions) {
+                if (insn.kind == InsnKind.CALL &&
+                    insn.owner in CONTINUATION_OWNERS &&
+                    insn.name in CONTINUATION_RESUME_METHODS
+                ) {
+                    val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, context)
+                    val chainSuffix = if (sinkHops.size > 1) {
+                        "; call chain: ${sinkHops.joinToString(" -> ") { it.renderShort() }}"
+                    } else {
+                        ""
+                    }
+                    out += finding(
+                        rule = rule,
+                        evidence = "${insn.owner.substringAfterLast('/')}.${insn.name}() invoked off-region",
+                        why = rule.why,
+                        location = location(model, method, insn),
+                        contextual = true,
+                        context = "resumed off-region: ${context.reason}$chainSuffix",
+                        callChain = chainLocations,
+                    )
+                }
+            }
+        }
+
+        // 2. Unconfined delay/yield/Unconfined suspension inside suspend method before region-guarded call
+        val isSuspendMethod = method.id.name == "invokeSuspend" ||
+            method.id.desc.contains("Lkotlin/coroutines/Continuation;)")
+        if (!isSuspendMethod) return
+
+        val hasFoliaReentry = instructions.any { insn ->
+            insn.kind == InsnKind.CALL && (
+                (insn.owner.endsWith("/RegionScheduler") || insn.owner.endsWith("/EntityScheduler")) ||
+                    FOLIA_DISPATCHER_METHOD_HINTS.any { insn.name.lowercase().contains(it) }
+                )
+        }
+        if (hasFoliaReentry) return
+
+        for (i in instructions.indices) {
+            val insn = instructions[i]
+            val suspendLabel = when {
+                insn.kind == InsnKind.CALL &&
+                    insn.owner == "kotlinx/coroutines/DelayKt" &&
+                    insn.name.startsWith("delay") -> "DelayKt.${insn.name.substringBefore('-')}()"
+
+                insn.kind == InsnKind.CALL &&
+                    insn.owner == "kotlinx/coroutines/YieldKt" &&
+                    insn.name == "yield" -> "YieldKt.yield()"
+
+                insn.kind == InsnKind.CALL &&
+                    insn.owner == "kotlinx/coroutines/Dispatchers" &&
+                    insn.name == "getUnconfined" -> "Dispatchers.Unconfined"
+
+                else -> null
+            } ?: continue
+
+            val postSuspendSink = instructions.subList(i + 1, instructions.size).firstOrNull(::isPostSuspendRegionSink)
+                ?: continue
+
+            val (sinkHops, chainLocations) = buildSinkChain(model, method, insn, context)
+            out += finding(
+                rule = rule,
+                evidence = "$suspendLabel resumes before ${postSuspendSink.owner.substringAfterLast('/')}.${postSuspendSink.name}()",
+                why = rule.why,
+                location = location(model, method, insn),
+                contextual = true,
+                context = context?.let { "unconfined coroutine suspension (${it.reason})" }
+                    ?: "coroutine suspension resumes on DefaultExecutor/unconfined thread without Folia scheduler re-entry",
+                callChain = chainLocations,
+            )
+            break
+        }
+    }
+
+    private fun isPostSuspendRegionSink(insn: Insn): Boolean {
+        if (insn.kind != InsnKind.CALL || insn.name in ENUM_METHODS) return false
+        if (insn.name == "getScheduler" || insn.name == "teleportAsync") return false
+        if (insn.owner.startsWith("org/bukkit/entity/") &&
+            insn.owner !in setOf("org/bukkit/entity/EntityType", "org/bukkit/entity/SpawnCategory", "org/bukkit/entity/Pose")
+        ) {
+            return true
+        }
+        if (insn.owner == "org/bukkit/World" && insn.name !in setOf("getChunkAtAsync", "getChunkAtAsyncUrgently", "getName", "getUID")) {
+            return true
+        }
+        if (insn.owner == "org/bukkit/block/Block" || insn.owner == "org/bukkit/block/BlockState" ||
+            insn.owner in RuleCatalog.TILE_ENTITY_OWNERS || insn.owner.startsWith("org/bukkit/inventory/")
+        ) {
+            return true
+        }
+        return false
     }
 
     private fun collectLifecycleAndTeleportRules(
@@ -870,6 +1136,23 @@ class FindingCollector(
             "kotlin/jvm/internal/Intrinsics",
         )
         val ENUM_METHODS = setOf("values", "valueOf", "name", "ordinal")
+        val EPHEMERAL_TASK_SUPERTYPES = setOf(
+            "java/lang/Runnable",
+            "org/bukkit/scheduler/BukkitRunnable",
+            "kotlin/coroutines/jvm/internal/SuspendLambda",
+            "kotlin/coroutines/jvm/internal/RestrictedSuspendLambda",
+            "kotlin/coroutines/jvm/internal/ContinuationImpl",
+        )
+        val CONTINUATION_OWNERS = setOf(
+            "kotlin/coroutines/Continuation",
+            "kotlinx/coroutines/CancellableContinuation",
+        )
+        val CONTINUATION_RESUME_METHODS = setOf(
+            "resumeWith", "resume", "tryResume",
+        )
+        val FOLIA_DISPATCHER_METHOD_HINTS = setOf(
+            "regiondispatcher", "entitydispatcher", "minecraftdispatcher",
+        )
         val CAPTURED_BLOCK_STATE_DESCRIPTORS: Set<String> =
             (RuleCatalog.TILE_ENTITY_OWNERS + "org/bukkit/block/BlockState")
                 .mapTo(mutableSetOf()) { "L$it;" }
